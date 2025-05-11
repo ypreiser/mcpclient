@@ -25,7 +25,6 @@ const getMongoStore = () => {
       );
     }
     mongoStoreInstance = new MongoStore({
-
       mongoose: mongoose,
       // collectionName: "whatsapp_sessions",
     });
@@ -241,20 +240,13 @@ class WhatsAppService {
           systemPromptText,
         } = currentSession.aiInstance; // chatHistory is no longer part of aiInstance state here
 
-        try {
-          logger.info(
-            { body: message.body, from: message.from, connectionName },
-            "Service: Received message"
-          );
+        let userNumber; // Declare userNumber outside the try block
 
+        try {
           const contact = await message.getContact();
           const userName = contact.name || contact.pushname || message.from;
-          const userNumber = message.from; // User's WhatsApp ID (e.g., "xxxxxxxxxx@c.us")
-
-          logger.info(
-            {contact, userName, userNumber},
-            "msg metadata"
-          )
+          userNumber = message.from.split("@")[0]; // Assign value inside the try block
+          logger.info({ contact, userName, userNumber }, "msg metadata");
 
           let chat = await Chat.findOneAndUpdate(
             {
@@ -266,11 +258,10 @@ class WhatsAppService {
                 sessionId: userNumber,
                 source: "whatsapp",
                 metadata: {
-                  userName,
                   connectionName,
                   lastActive: new Date(),
                   tags: [],
-                  notes: "", // Notes initialized as empty string
+                  notes: "", // Notes initialized as an empty string
                 },
                 messages: [], // Initialize with an empty messages array
               },
@@ -305,7 +296,9 @@ class WhatsAppService {
           const chatNotes = chat.metadata.notes || "No notes available.";
           const contextualMetadataMessage = {
             role: "assistant", // Per requirement, to provide context *to* the assistant
-            content: `You are messaging on WhatsApp with ${userName} (Number: ${userNumber.slice('@')}). Associated notes: ${chatNotes}`,
+            content: `You are messaging on WhatsApp with ${userName} (Number: ${userNumber.slice(
+              "@"
+            )}). Associated notes: ${chatNotes}`,
           };
 
           // Combine metadata message with recent conversation history for the AI
@@ -342,7 +335,7 @@ class WhatsAppService {
           );
         } catch (error) {
           logger.error(
-            { err: error, connectionName, from: userNumber },
+            { err: error, connectionName, from: userNumber }, // userNumber is now accessible
             "Service: Error processing message"
           );
           try {
