@@ -15,7 +15,6 @@ import whatsappRoutes from "./routes/whatsappRoute.js";
 dotenv.config();
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
-// const systemPromptName = process.env.SYSTEM_PROMPT_NAME; // Global default, if needed
 
 if (!MONGODB_URI) {
   logger.error(

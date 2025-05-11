@@ -7,7 +7,10 @@ import SystemPrompt from "./models/systemPromptModel.js";
 import logger from "./utils/logger.js";
 
 dotenv.config();
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME || "gemini-pro"; // Allow override
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME 
+if (!GEMINI_MODEL_NAME) {
+  logger.error("GEMINI_MODEL_NAME is not set. Please set it in your environment variables.");
+}
 
 const GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
@@ -15,7 +18,6 @@ if (!GOOGLE_GENERATIVE_AI_API_KEY) {
   logger.error(
     "GOOGLE_GENERATIVE_AI_API_KEY is not set. Please set it in your environment variables."
   );
-  // Don't process.exit here, let the calling service handle it or fail if initializeAI is called.
 }
 
 // Store MCP clients globally to manage their lifecycle if needed, though typically managed by consumer.
