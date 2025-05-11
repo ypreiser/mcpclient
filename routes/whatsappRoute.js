@@ -1,91 +1,117 @@
 import express from "express";
-import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import whatsappService from "../utils/whatsappService.js";
+import logger from "../utils/logger.js";
 
 const router = express.Router();
 
 // Initialize a new WhatsApp session
-router.post("/session", async (req, res) => {
-  console.log(
-    "Initializing WhatsApp session with system prompt",
-    req.body.systemPromptName
-  );
+router.post("/session", async (req, res, next) => {
+  const { connectionName, systemPromptName } = req.body;
+  logger.info({ connectionName, systemPromptName }, "API: Initializing WhatsApp session");
+
+  if (!connectionName || typeof connectionName !== 'string' || connectionName.trim() === "") {
+    return res.status(400).json({ error: "Connection name is required and must be a non-empty string." });
+  }
+  if (!systemPromptName || typeof systemPromptName !== 'string' || systemPromptName.trim() === "") {
+    return res.status(400).json({ error: "System prompt name is required and must be a non-empty string." });
+  }
+
   try {
-    const sessionId = uuidv4();
-    await whatsappService.initializeSession(
-      sessionId,
-      req.body.systemPromptName
+    const client = await whatsappService.initializeSession(
+      connectionName,
+      systemPromptName
     );
-    res.json({ sessionId });
+    // Client object itself is complex, just return status.
+    // The status is now managed within whatsappService.sessions map
+    const status = await whatsappService.getStatus(connectionName);
+    res.status(201).json({
+      connectionName,
+      status: status || "initializing", // Fallback if status not immediately updated
+    });
   } catch (error) {
-    console.error("Error creating WhatsApp session:", error);
-    res.status(500).json({ error: "Failed to create WhatsApp session" });
+    logger.error({ err: error, connectionName, systemPromptName }, "API: Error creating WhatsApp session");
+    // Pass to global error handler, or provide specific response
+    if (error.message.includes("already being managed")) {
+        return res.status(409).json({ error: error.message });
+    }
+    next(error);
   }
 });
 
 // Get QR code for a session
-router.get("/session/:sessionId/qr", async (req, res) => {
-  console.log("route: Getting QR code for session", req.params.sessionId);
+router.get("/session/:connectionName/qr", async (req, res, next) => {
+  const { connectionName } = req.params;
+  logger.info({ connectionName }, "API: Getting QR code");
   try {
-    const { sessionId } = req.params;
-    const qr = await whatsappService.getQRCode(sessionId);
-    //turn qr into a data url
-    const qrDataUrl = await QRCode.toDataURL(qr);
+    const qrString = await whatsappService.getQRCode(connectionName);
 
-    if (!qr) {
-      return res.status(404).json({ error: "QR code not available" });
+    if (!qrString) {
+      const status = await whatsappService.getStatus(connectionName);
+      if (status === 'not_found') return res.status(404).json({ error: "Session not found." });
+      return res.status(404).json({ error: "QR code not available or session not in QR state.", status });
     }
 
-    console.log("route: QR code:", qr);
-
+    const qrDataUrl = await QRCode.toDataURL(qrString);
+    logger.info({ connectionName }, "API: QR code generated successfully");
     res.json({ qr: qrDataUrl });
   } catch (error) {
-    console.error("Error getting QR code:", error);
-    res.status(500).json({ error: "Failed to get QR code" });
+    logger.error({ err: error, connectionName }, "API: Error getting QR code");
+    next(error);
   }
 });
 
 // Get status of a session
-router.get("/session/:sessionId/status", async (req, res) => {
-  console.log("route: Getting status for session", req.params.sessionId);
+router.get("/session/:connectionName/status", async (req, res, next) => {
+  const { connectionName } = req.params;
+  logger.debug({ connectionName }, "API: Getting session status"); // Debug for frequent calls
   try {
-    const { sessionId } = req.params;
-    const status = await whatsappService.getStatus(sessionId);
-    res.json({ status });
+    const status = await whatsappService.getStatus(connectionName);
+    if (status === "not_found") {
+        return res.status(404).json({ status, message: "Session not found." });
+    }
+    res.json({ connectionName, status });
   } catch (error) {
-    console.error("Error getting status:", error);
-    res.status(500).json({ error: "Failed to get status" });
+    logger.error({ err: error, connectionName }, "API: Error getting status");
+    next(error);
   }
 });
 
 // Send a message
-router.post("/session/:sessionId/message", async (req, res) => {
+router.post("/session/:connectionName/message", async (req, res, next) => {
+  const { connectionName } = req.params;
+  const { to, message } = req.body;
+  logger.info({ connectionName, to }, "API: Sending message");
+
+  if (!to || typeof to !== 'string' || to.trim() === "" || !message || typeof message !== 'string' || message.trim() === "") {
+    return res.status(400).json({ error: "Receiver 'to' and 'message' are required and must be non-empty strings." });
+  }
+
   try {
-    const { sessionId } = req.params;
-    const { to, message } = req.body;
-
-    if (!to || !message) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    await whatsappService.sendMessage(sessionId, to, message);
-    res.json({ success: true });
+    const sentMessage = await whatsappService.sendMessage(connectionName, to, message);
+    res.json({ success: true, messageId: sentMessage.id.id }); // Return message ID if available
   } catch (error) {
-    console.error("Error sending message:", error);
-    res.status(500).json({ error: "Failed to send message" });
+    logger.error({ err: error, connectionName, to }, "API: Error sending message");
+    if (error.message.includes("not connected")) {
+        return res.status(409).json({error: error.message, status: await whatsappService.getStatus(connectionName)});
+    }
+    if (error.message.includes("not found")) {
+        return res.status(404).json({error: error.message});
+    }
+    next(error);
   }
 });
 
 // Close a session
-router.delete("/session/:sessionId", async (req, res) => {
+router.delete("/session/:connectionName", async (req, res, next) => {
+  const { connectionName } = req.params;
+  logger.info({ connectionName }, "API: Closing session");
   try {
-    const { sessionId } = req.params;
-    await whatsappService.closeSession(sessionId);
-    res.json({ success: true });
+    await whatsappService.closeSession(connectionName);
+    res.json({ success: true, message: `Session '${connectionName}' closed.` });
   } catch (error) {
-    console.error("Error closing session:", error);
-    res.status(500).json({ error: "Failed to close session" });
+    logger.error({ err: error, connectionName }, "API: Error closing session");
+    next(error);
   }
 });
 

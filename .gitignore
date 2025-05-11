@@ -3,6 +3,9 @@ node_modules
 node_modules/
 .env.local
 .wwebjs_auth
+.wwebjs_auth/
 .wwebjs_cache
+.wwebjs_cache/
 sessions/
-
+*.log
+.DS_Store

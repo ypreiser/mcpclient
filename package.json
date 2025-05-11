@@ -6,10 +6,12 @@
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^7.3.1",
+    "helmet": "^7.1.0",
     "mongoose": "^8.1.0",
     "pino": "^8.17.2",
+    "pino-pretty": "^10.3.1",
     "qrcode": "^1.5.3",
-    "sqlite3": "^5.1.7",
     "uuid": "^9.0.1",
     "whatsapp-web.js": "^1.27.0",
     "wwebjs-mongo": "^1.1.0"
@@ -20,11 +22,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js --watch",
+    "dev": "node --watch server.js",
+    "lint": "eslint .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "",
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
 }

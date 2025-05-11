@@ -3,59 +3,90 @@ import pkg from "whatsapp-web.js";
 import { MongoStore } from "wwebjs-mongo";
 import mongoose from "mongoose";
 import { initializeAI } from "../mcpClient.js";
-import WhatsAppCredentials from "../models/WhatsAppCredentials.js";
+// import WhatsAppCredentials from "../models/WhatsAppCredentials.js"; // Potentially redundant
 import SystemPrompt from "../models/systemPromptModel.js";
+import Chat from "../models/chatModel.js";
 import { systemPromptToNaturalLanguage } from "../utils/json2llm.js";
+import logger from "../utils/logger.js";
 
 const { Client, RemoteAuth } = pkg;
 
-const store = new MongoStore({
-  mongoose: mongoose,
-  collectionName: "whatsapp_sessions", // Ensure this collection exists and is writable
-});
+const PUPPETEER_AUTH_PATH = process.env.PUPPETEER_AUTH_PATH || "./.wwebjs_auth";
+const PUPPETEER_CACHE_PATH = process.env.PUPPETEER_CACHE_PATH || "./.wwebjs_cache";
+
+
+let mongoStoreInstance;
+const getMongoStore = () => {
+  if (!mongoStoreInstance) {
+    if (!mongoose.connection || mongoose.connection.readyState !== 1) {
+        logger.error("MongoDB connection not ready for MongoStore for WhatsApp.");
+        // This implies an issue with the main MongoDB connection initialization order.
+        // For now, we'll throw, but in a robust system, you might retry or delay.
+        throw new Error("MongoDB connection not available for WhatsApp session store.");
+    }
+    mongoStoreInstance = new MongoStore({
+      mongoose: mongoose,
+      collectionName: "whatsapp_sessions", // Customizable if needed
+    });
+    logger.info("MongoStore for WhatsApp initialized.");
+  }
+  return mongoStoreInstance;
+}
+
 
 class WhatsAppService {
   constructor() {
-    this.sessions = new Map();
-    this.aiInstances = new Map(); // Store AI instances per session
+    this.sessions = new Map(); // Stores { client, status, qr, systemPromptName, aiInstance }
+    // this.aiInstances = new Map(); // Merged into this.sessions
+    // this.clients = new Map(); // Merged into this.sessions (client is part of session object)
   }
 
-  async initializeSession(sessionId, systemPromptName) {
-    console.log(
-      "Service: Initializing WhatsApp session with ID:",
-      sessionId,
-      "and prompt:",
-      systemPromptName
+  async initializeSession(connectionName, systemPromptName) {
+    logger.info(
+      `Service: Initializing WhatsApp session. Connection: '${connectionName}', Prompt: '${systemPromptName}'`
     );
     try {
-      // Fetch the system prompt by name
+      const existingSession = this.sessions.get(connectionName);
+      if (
+        existingSession &&
+        (existingSession.status === "initializing" ||
+          existingSession.status === "qr_ready" ||
+          existingSession.status === "connected" ||
+          existingSession.status === "authenticated")
+      ) {
+        logger.warn(
+          `Service: Session '${connectionName}' already exists with status ${existingSession.status}. Aborting new initialization.`
+        );
+        throw new Error(
+          `Session '${connectionName}' is already being managed. Please disconnect first or use a different name.`
+        );
+      }
+
+      // Fetch and prepare AI components first
       const systemPromptDoc = await SystemPrompt.findOne({
         name: systemPromptName,
       });
       if (!systemPromptDoc) {
-        throw new Error("System prompt not found");
+        throw new Error(`System prompt "${systemPromptName}" not found`);
       }
 
-      // Initialize AI with the specific system prompt
-      const aiDependencies = await initializeAI(systemPromptName);
-      const systemPromptText = systemPromptToNaturalLanguage(systemPromptDoc);
+      const aiInstance = await initializeAI(systemPromptName);
+      const systemPromptText = systemPromptToNaturalLanguage(systemPromptDoc.toObject());
+      aiInstance.systemPromptText = systemPromptText; // Add natural language prompt to AI instance
+      aiInstance.chatHistory = []; // For AI context window
 
-      // Store AI instance for this session with all required dependencies
-      this.aiInstances.set(sessionId, {
-        ...aiDependencies,
-        systemPrompt: systemPromptText,
-        messages: [], // Initialize empty message history
-      });
+      const store = getMongoStore();
 
       const client = new Client({
-        clientId: sessionId, // Important for RemoteAuth to distinguish sessions
+        clientId: connectionName,
         authStrategy: new RemoteAuth({
           store: store,
-          backupSyncIntervalMs: 300000,
-          dataPath: `./.wwebjs_auth/session-${sessionId}`, // Ensure unique path per session if not using clientId for store segregation
+          clientId: connectionName,
+          backupSyncIntervalMs: 300000, // 5 minutes
+          dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`, // Ensure this directory is writable
         }),
         puppeteer: {
-          headless: true,
+          headless: true, // Always true for production servers
           args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -63,365 +94,276 @@ class WhatsAppService {
             "--disable-accelerated-2d-canvas",
             "--no-first-run",
             "--no-zygote",
-            "--single-process", // Often helpful in resource-constrained environments
             "--disable-gpu",
+            "--single-process", // May help in resource-constrained envs, monitor
           ],
+          // executablePath: process.env.CHROME_EXECUTABLE_PATH, // Optional: if system Chrome/Chromium is preferred
         },
-        webVersion: "2.2409.2", // Be mindful that this can become outdated
+        webVersion: "2.2409.2", // Keep pinned, update deliberately
         webVersionCache: {
-          type: "local",
-          path: "./.wwebjs_cache",
+          type: "local", // Or 'remote' if preferred
+          path: PUPPETEER_CACHE_PATH, // Ensure this directory is writable
         },
       });
 
-      // Create session entry in the map BEFORE initializing or attaching listeners
-      // This ensures event handlers can find and update this session entry.
-      this.sessions.set(sessionId, {
+      // Store session info immediately
+      this.sessions.set(connectionName, {
         client,
         status: "initializing",
-        qr: null, // Initialize QR as null
-        systemPromptName, // Store if needed
+        qr: null,
+        systemPromptName,
+        aiInstance,
       });
-      console.log(
-        "Service: Initial session entry created for",
-        sessionId,
-        this.sessions.get(sessionId)
-      );
+      logger.info(`Service: Session entry created for '${connectionName}'. Status: initializing.`);
 
+      // Event handlers
       client.on("qr", (qr) => {
-        console.log(
-          "Service: QR Code received for session:",
-          sessionId,
-          "QR data length:",
-          qr ? qr.length : "N/A"
-        );
-        // console.log("Service: QR Data:", qr); // Uncomment for debugging if QR is short/invalid
-
-        const currentSession = this.sessions.get(sessionId);
-        if (currentSession) {
-          this.sessions.set(sessionId, {
-            ...currentSession,
-            qr,
-            status: "qr_ready",
-          });
-          console.log(
-            "Service: Session updated with QR code for",
-            sessionId,
-            "New status: qr_ready"
-          );
+        logger.info(`Service: QR Code received for '${connectionName}'.`);
+        if (!qr || typeof qr !== "string" || qr.length === 0) {
+          logger.error(`Service: Invalid QR code data received for '${connectionName}'.`);
+          const current = this.sessions.get(connectionName);
+          if (current) this.sessions.set(connectionName, { ...current, status: "qr_error" });
+          return;
+        }
+        const current = this.sessions.get(connectionName);
+        if (current) {
+          this.sessions.set(connectionName, { ...current, qr, status: "qr_ready" });
+          logger.info(`Service: Session for '${connectionName}' updated. Status: qr_ready.`);
         } else {
-          console.error(
-            "Service Critical Error: Session",
-            sessionId,
-            "not found in map when 'qr' event fired."
-          );
+          logger.error(`Service Critical Error: '${connectionName}' not found in map when 'qr' event fired.`);
         }
       });
 
       client.on("ready", () => {
-        console.log(
-          "Service: WhatsApp client is ready for session:",
-          sessionId
-        );
-        const currentSession = this.sessions.get(sessionId);
-        if (currentSession) {
-          this.sessions.set(sessionId, {
-            ...currentSession,
-            status: "connected",
-            qr: null, // QR code is no longer needed once connected
-          });
-          console.log(
-            "Service: Session status updated to connected for",
-            sessionId
-          );
-        }
+        logger.info(`Service: WhatsApp client is ready for '${connectionName}'.`);
+        const current = this.sessions.get(connectionName);
+        if (current) this.sessions.set(connectionName, { ...current, status: "connected", qr: null });
       });
 
       client.on("authenticated", () => {
-        console.log(
-          "Service: WhatsApp client authenticated for session:",
-          sessionId
-        );
-        // You might want to update status here too, e.g., "authenticated"
-        // and clear QR if not already done by "ready"
-        const currentSession = this.sessions.get(sessionId);
-        if (currentSession) {
-          this.sessions.set(sessionId, {
-            ...currentSession,
-            status: "authenticated", // Or keep as "connected" if "ready" is preferred
-            qr: null,
-          });
-        }
+        logger.info(`Service: WhatsApp client authenticated for '${connectionName}'.`);
+        const current = this.sessions.get(connectionName);
+        if (current) this.sessions.set(connectionName, { ...current, status: "authenticated", qr: null });
       });
 
-      client.on("auth_failure", (error) => {
-        console.error(
-          "Service: WhatsApp authentication failed for session:",
-          sessionId,
-          "Error:",
-          error
-        );
-        const currentSession = this.sessions.get(sessionId);
-        if (currentSession) {
-          this.sessions.set(sessionId, {
-            ...currentSession,
-            status: "auth_failed",
-          });
-        }
+      client.on("auth_failure", (errorMsg) => {
+        logger.error(`Service: WhatsApp authentication failed for '${connectionName}'. Error: ${errorMsg}`);
+        const current = this.sessions.get(connectionName);
+        if (current) this.sessions.set(connectionName, { ...current, status: "auth_failed" });
+        // Consider automatic cleanup/retry logic here
+        this.closeSession(connectionName).catch(err => logger.error({err}, `Error during auto-cleanup for ${connectionName} on auth_failure`));
       });
 
       client.on("disconnected", (reason) => {
-        console.log(
-          "Service: WhatsApp client disconnected for session:",
-          sessionId,
-          "Reason:",
-          reason
-        );
-        const currentSession = this.sessions.get(sessionId);
-        if (currentSession) {
-          this.sessions.set(sessionId, {
-            ...currentSession,
-            status: "disconnected",
-          });
-          // Optionally, attempt to clean up or re-initialize, or rely on user to reconnect
-        }
+        logger.warn(`Service: WhatsApp client disconnected for '${connectionName}'. Reason: ${reason}`);
+        const current = this.sessions.get(connectionName);
+        if (current) this.sessions.set(connectionName, { ...current, status: "disconnected" });
+        // Aggressive cleanup on any disconnect to avoid zombie sessions
+        this.closeSession(connectionName).catch(err => logger.error({err}, `Error during auto-cleanup for ${connectionName} on disconnect`));
       });
 
       client.on("message", async (message) => {
-        if (!message.fromMe && message.from !== "status@broadcast") {
+        if (message.fromMe || message.from === "status@broadcast") return;
+
+        const currentSession = this.sessions.get(connectionName);
+        if (!currentSession || !currentSession.aiInstance) {
+          logger.error(`Service: AI not initialized or session not found for '${connectionName}' on message event.`);
           try {
-            console.log(
-              "Service: Received message:",
-              message.body,
-              "from:",
-              message.from,
-              "for session:",
-              sessionId
-            );
+            await message.reply("Sorry, the AI service for this connection is not properly configured.");
+          } catch (replyErr) {
+            logger.error({err: replyErr}, `Failed to send error reply for ${connectionName}`);
+          }
+          return;
+        }
+        
+        const { aiInstance } = currentSession;
+        const { tools, google, GEMINI_MODEL_NAME, generateText, systemPromptText, chatHistory } = aiInstance;
 
-            const sessionAI = this.aiInstances.get(sessionId);
-            if (sessionAI) {
-              const { tools, google, GEMINI_MODEL_NAME, generateText } =
-                sessionAI;
 
-              // Add user message to history
-              sessionAI.messages.push({
-                role: "user",
-                content: message.body,
-                timestamp: new Date(),
-              });
+        try {
+          logger.info({ body: message.body, from: message.from, connectionName }, "Service: Received message");
 
-              // Generate response
-              const response = await generateText({
-                model: google(GEMINI_MODEL_NAME),
-                tools,
-                maxSteps: 10,
-                system: sessionAI.systemPrompt,
-                messages: sessionAI.messages,
-              });
+          let chat = await Chat.findOne({ sessionId: message.from, "metadata.connectionName": connectionName });
+          const contact = await message.getContact();
+          const userName = contact.name || contact.pushname || message.from;
 
-              // Add assistant response to history
-              sessionAI.messages.push({
-                role: "assistant",
-                content: response.text,
-                timestamp: new Date(),
-              });
+          if (!chat) {
+            chat = new Chat({
+              sessionId: message.from, // This is the user's chat ID (e.g. phone number)
+              source: "whatsapp",
+              metadata: {
+                userName,
+                connectionName, // Store which of our connections this chat belongs to
+                lastActive: new Date(),
+                tags: [],
+                notes: "",
+              },
+              messages: [],
+            });
+          } else {
+            chat.metadata.lastActive = new Date();
+            if (chat.metadata.userName !== userName) chat.metadata.userName = userName;
+          }
 
-              await message.reply(response.text);
-              console.log(
-                "Service: Sent AI response to:",
-                message.from,
-                "for session:",
-                sessionId
-              );
-            } else {
-              console.error(
-                "Service: AI not initialized for session",
-                sessionId,
-                "cannot process message."
-              );
-              await message.reply(
-                "Sorry, the AI is not available at the moment."
-              );
+          const userMessageEntry = { role: "user", content: message.body, timestamp: new Date(), status: "sent" };
+          chat.messages.push(userMessageEntry);
+          
+          // Manage AI chat history (e.g., keep last N messages for context)
+          const MAX_HISTORY_LENGTH = 20; // Example: keep last 20 messages (user + assistant)
+          chatHistory.push({ role: "user", content: message.body });
+          if (chatHistory.length > MAX_HISTORY_LENGTH) {
+            chatHistory.splice(0, chatHistory.length - MAX_HISTORY_LENGTH);
+          }
+
+          const response = await generateText({
+            model: google(GEMINI_MODEL_NAME),
+            tools,
+            maxSteps: 10,
+            system: systemPromptText,
+            messages: chatHistory,
+          });
+
+          const assistantMessageEntry = { role: "assistant", content: response.text, timestamp: new Date(), status: "sent" };
+          chat.messages.push(assistantMessageEntry);
+          chatHistory.push({ role: "assistant", content: response.text }); // Also add assistant response to AI history
+          
+          chat.updatedAt = new Date();
+          await chat.save();
+
+          const sentMessage = await message.reply(response.text);
+          // Update message status (simplified, could be more robust)
+          const updateLastMessageStatus = async (status) => {
+            const freshChat = await Chat.findById(chat._id);
+            if (freshChat && freshChat.messages.length > 0) {
+                const lastMsg = freshChat.messages[freshChat.messages.length - 1];
+                if (lastMsg.role === 'assistant') { // Ensure it's the assistant's message
+                    lastMsg.status = status;
+                    freshChat.updatedAt = new Date();
+                    await freshChat.save().catch(err => logger.error({err}, "Error saving chat on status update"));
+                }
             }
-          } catch (error) {
-            console.error(
-              "Service: Error processing message for session",
-              sessionId,
-              ":",
-              error
-            );
-            await message.reply(
-              "Sorry, I encountered an error processing your message."
-            );
+          };
+          // Note: 'delivered' and 'read' events on `sentMessage` are not reliably emitted for all message types or situations.
+          // Relying on ack events might be better if available.
+          // For now, this is a simple attempt.
+          // setTimeout(() => updateLastMessageStatus("delivered"), 5000); // Optimistic delivered
+          logger.info({ to: message.from, connectionName, responseText: response.text }, "Service: Sent AI response");
+
+        } catch (error) {
+          logger.error({ err: error, connectionName, from: message.from }, "Service: Error processing message");
+          try {
+            await message.reply("Sorry, I encountered an error processing your message.");
+          } catch (replyErr) {
+            logger.error({err: replyErr}, `Failed to send error reply after processing error for ${connectionName}`);
           }
         }
       });
 
-      console.log(
-        "Service: Starting WhatsApp client.initialize() for session:",
-        sessionId
-      );
-      await client.initialize(); // This is an async call that will trigger the events above
-      console.log(
-        "Service: client.initialize() promise resolved for session:",
-        sessionId
-      );
-      // The session status should have been updated by one of the events ('qr', 'ready', 'auth_failure') by now.
-      // The function returns; the QR code (if generated) is in the session map.
+      logger.info(`Service: Starting WhatsApp client.initialize() for '${connectionName}'...`);
+      await client.initialize();
+      logger.info(`Service: client.initialize() completed for '${connectionName}'.`);
+
+      return client;
     } catch (error) {
-      console.error(
-        "Service: Error in initializeSession for session ID",
-        sessionId,
-        ":",
-        error
-      );
-      // Clean up if session was partially added
-      if (this.sessions.has(sessionId)) {
-        const sessionToClean = this.sessions.get(sessionId);
-        if (sessionToClean && sessionToClean.client) {
+      logger.error({ err: error, connectionName }, `Service: Error in initializeSession for '${connectionName}'`);
+      // Ensure cleanup if initialization fails at any point
+      const sessionToClean = this.sessions.get(connectionName);
+      if (sessionToClean) {
+        if (sessionToClean.client) {
           try {
             await sessionToClean.client.destroy();
+            logger.info(`Service: Client for '${connectionName}' destroyed during error cleanup.`);
           } catch (destroyError) {
-            console.error(
-              "Service: Error destroying client during cleanup for session",
-              sessionId,
-              ":",
-              destroyError
-            );
+            logger.error({ err: destroyError, connectionName }, `Service: Error destroying client during cleanup for '${connectionName}'.`);
           }
         }
-        this.sessions.delete(sessionId);
-        console.log(
-          "Service: Cleaned up session entry for",
-          sessionId,
-          "due to initialization error."
-        );
+        if (sessionToClean.aiInstance && sessionToClean.aiInstance.closeMcpClients) {
+            await sessionToClean.aiInstance.closeMcpClients();
+        }
       }
-      throw error; // Re-throw to be caught by the route handler
+      this.sessions.delete(connectionName);
+      logger.info(`Service: Cleaned up session for '${connectionName}' due to initialization error.`);
+      throw error;
     }
   }
 
-  async getQRCode(sessionId) {
-    const session = this.sessions.get(sessionId);
+  async getQRCode(connectionName) {
+    const session = this.sessions.get(connectionName);
     if (!session) {
-      console.warn(
-        "Service: getQRCode called for non-existent session:",
-        sessionId
-      );
-      // throw new Error("Session not found"); // Or return null to let route handle 404
+      logger.warn(`Service: getQRCode called for non-existent connection: '${connectionName}'.`);
       return null;
     }
-    console.log(
-      "Service: Getting QR Code for session:",
-      sessionId,
-      "Current status:",
-      session.status,
-      "QR available:",
-      !!session.qr
-    );
-    return session.qr; // This will be null until the 'qr' event updates it
+    if (session.status !== 'qr_ready' || !session.qr || typeof session.qr !== "string" || session.qr.length === 0) {
+      logger.warn(`Service: QR code not ready or invalid for '${connectionName}'. Status: ${session.status}.`);
+      return null;
+    }
+    logger.info(`Service: Getting QR Code for '${connectionName}'. Status: ${session.status}.`);
+    return session.qr;
   }
 
-  async getStatus(sessionId) {
-    const session = this.sessions.get(sessionId);
+  async getStatus(connectionName) {
+    const session = this.sessions.get(connectionName);
     if (!session) {
-      console.warn(
-        "Service: getStatus called for non-existent session:",
-        sessionId
-      );
-      return "not_found"; // Or throw error
+      return "not_found";
     }
-    console.log(
-      "Service: Getting status for session:",
-      sessionId,
-      "Status:",
-      session.status
-    );
     return session.status || "unknown";
   }
 
-  async sendMessage(sessionId, to, message) {
-    const session = this.sessions.get(sessionId);
+  async sendMessage(connectionName, to, messageText) {
+    const session = this.sessions.get(connectionName);
     if (!session || !session.client) {
-      throw new Error("Session not found or client not available");
+      throw new Error(`Connection client not found for '${connectionName}'.`);
     }
-    if (
-      session.status !== "connected" &&
-      session.status !== "authenticated" &&
-      session.status !== "ready"
-    ) {
-      // 'ready' is also a connected state
-      console.warn(
-        "Service: Attempt to send message while client not connected. Session:",
-        sessionId,
-        "Status:",
-        session.status
-      );
+    if (session.status !== "connected" && session.status !== "authenticated") { // 'ready' is also a valid state
       throw new Error(
-        `WhatsApp client is not connected (status: ${session.status})`
+        `WhatsApp client for '${connectionName}' is not connected (status: ${session.status}).`
       );
     }
-    console.log("Service: Sending message via session:", sessionId, "To:", to);
-    return session.client.sendMessage(to, message);
+    logger.info({connectionName, to, messageText}, `Service: Sending message via '${connectionName}'.`);
+    return session.client.sendMessage(to, messageText);
   }
 
-  async closeSession(sessionId) {
-    console.log("Service: Attempting to close session:", sessionId);
-    const session = this.sessions.get(sessionId);
-    if (session && session.client) {
-      try {
-        await session.client.logout();
-        console.log(
-          "Service: WhatsApp client logged out for session:",
-          sessionId
-        );
-      } catch (error) {
-        console.error(
-          "Service: Error logging out WhatsApp client for session",
-          sessionId,
-          ":",
-          error,
-          "Attempting destroy."
-        );
+  async closeSession(connectionName) {
+    logger.info(`Service: Attempting to close connection: '${connectionName}'.`);
+    const session = this.sessions.get(connectionName);
+
+    if (session) {
+      if (session.client) {
+        try {
+          await session.client.logout();
+          logger.info(`Service: WhatsApp client logged out for '${connectionName}'.`);
+        } catch (logoutError) {
+          logger.error({ err: logoutError, connectionName }, `Service: Error logging out client for '${connectionName}'. Attempting destroy.`);
+        }
+        try {
+          await session.client.destroy();
+          logger.info(`Service: WhatsApp client destroyed for '${connectionName}'.`);
+        } catch (destroyError) {
+          logger.error({ err: destroyError, connectionName }, `Service: Error destroying client for '${connectionName}'.`);
+        }
       }
-      try {
-        await session.client.destroy();
-        console.log(
-          "Service: WhatsApp client destroyed for session:",
-          sessionId
-        );
-      } catch (error) {
-        console.error(
-          "Service: Error destroying WhatsApp client for session",
-          sessionId,
-          ":",
-          error
-        );
+      if (session.aiInstance && session.aiInstance.closeMcpClients) {
+        try {
+            await session.aiInstance.closeMcpClients();
+            logger.info(`Service: AI MCP clients closed for '${connectionName}'.`);
+        } catch (aiCloseError) {
+            logger.error({ err: aiCloseError, connectionName }, `Service: Error closing AI MCP clients for '${connectionName}'.`);
+        }
       }
+      this.sessions.delete(connectionName);
     }
 
-    // Clean up AI instance
-    this.aiInstances.delete(sessionId);
-
-    // Remove from credentials model
+    // If using a separate WhatsAppCredentials model and it's keyed by connectionName
     try {
-      await WhatsAppCredentials.deleteOne({ sessionId: sessionId });
-      console.log(
-        "Service: Removed credentials from MongoDB for session:",
-        sessionId
-      );
+      await WhatsAppCredentials.deleteOne({ connectionName: connectionName });
+      logger.info(`Service: Removed credentials from MongoDB for '${connectionName}'.`);
     } catch (dbError) {
-      console.error(
-        "Service: Error removing credentials from MongoDB for session",
-        sessionId,
-        ":",
-        dbError
-      );
+      logger.error({err: dbError, connectionName}, `Service: Error removing credentials for '${connectionName}'.`);
     }
+    // Note: wwebjs-mongo RemoteAuth handles its own session data removal based on its logic.
 
-    this.sessions.delete(sessionId);
-    console.log("Service: Session removed from map:", sessionId);
+    logger.info(`Service: All resources for connection '${connectionName}' cleaned up.`);
+    return true;
   }
 }
 

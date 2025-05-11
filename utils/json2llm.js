@@ -3,7 +3,8 @@ export function fieldToText(key, value) {
     value === undefined ||
     value === null ||
     value === "" ||
-    (Array.isArray(value) && value.length === 0)
+    (Array.isArray(value) && value.length === 0) ||
+    (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
   ) {
     return "";
   }
@@ -28,16 +29,18 @@ export function fieldToText(key, value) {
     edgeCases: "Edge cases",
     tools: "Tools",
     privacyAndComplianceGuidelines: "Privacy and compliance guidelines",
+    mcpServers: "MCP Servers Configuration (for internal use, not for AI)", // MCP servers are not usually for the AI prompt
   };
 
   // Handle arrays of objects (like exampleResponses, edgeCases)
   if (
     Array.isArray(value) &&
     value.length > 0 &&
-    typeof value[0] === "object"
+    typeof value[0] === "object" && value[0] !== null
   ) {
     let text = `${fieldNames[key] || key}:\n`;
     value.forEach((item, idx) => {
+      if (item === null) return; // Skip null items in array
       text += `  ${idx + 1}. `;
       text += Object.entries(item)
         .map(([k, v]) => `${k}: ${v}`)
@@ -53,9 +56,10 @@ export function fieldToText(key, value) {
   }
 
   // Handle nested objects (like openingHours, tools)
-  if (typeof value === "object") {
+  if (typeof value === "object" && value !== null) {
     let text = `${fieldNames[key] || key}:\n`;
     for (const [k, v] of Object.entries(value)) {
+      if (v === undefined || v === null) continue; // Skip undefined/null properties
       if (Array.isArray(v)) {
         text += `  ${k}: ${v.join(", ")}\n`;
       } else {
@@ -69,10 +73,14 @@ export function fieldToText(key, value) {
   return `${fieldNames[key] || key}: ${value}\n`;
 }
 
-export function systemPromptToNaturalLanguage(prompt) {
+export function systemPromptToNaturalLanguage(promptDoc) {
   let text = "";
+  // Ensure promptDoc is a plain object if it's a Mongoose document
+  const prompt = promptDoc.toObject ? promptDoc.toObject() : promptDoc;
+
   for (const [key, value] of Object.entries(prompt)) {
-    if (key === "name" || key === "_id" || key === "__v") continue;
+    // Exclude internal fields and mcpServers from the AI-facing prompt text
+    if (key === "name" || key === "_id" || key === "__v" || key === "updatedAt" || key === "mcpServers") continue;
     text += fieldToText(key, value);
   }
   return text.trim();
