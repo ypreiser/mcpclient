@@ -254,26 +254,24 @@ class WhatsAppService {
               "metadata.connectionName": connectionName,
             },
             {
+              // ---- START OF CORRECTED UPDATE OBJECT ----
               $setOnInsert: {
                 sessionId: userNumber,
                 source: "whatsapp",
-                metadata: {
-                  connectionName,
-                  lastActive: new Date(),
-                  tags: [],
-                  notes: "", // Notes initialized as an empty string
-                },
+                "metadata.connectionName": connectionName,
+                "metadata.tags": [],
+                "metadata.notes": "", // Notes initialized as an empty string
                 messages: [], // Initialize with an empty messages array
               },
               $set: {
                 "metadata.lastActive": new Date(),
                 "metadata.userName": userName, // Update username, it might change
               },
-            },
+            }, // ---- END OF CORRECTED UPDATE OBJECT ----
             {
               upsert: true,
               new: true,
-              setDefaultsOnInsert: true, // Ensure schema defaults are applied on insert
+              setDefaultsOnInsert: true,
             }
           );
 
@@ -281,7 +279,7 @@ class WhatsAppService {
             role: "user",
             content: message.body,
             timestamp: new Date(),
-            status: "received", // Status of the incoming message
+            status: "delivered", // Status of the incoming message
           };
           chat.messages.push(userMessageEntry);
           // Note: chat object is saved after AI response is added.
