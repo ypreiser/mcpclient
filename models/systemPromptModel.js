@@ -1,3 +1,4 @@
+// models/systemPromptModel.js
 import mongoose from "mongoose";
 
 const McpServerSchema = new mongoose.Schema(
@@ -11,7 +12,7 @@ const McpServerSchema = new mongoose.Schema(
 );
 
 const SystemPromptSchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true, trim: true }, // Added unique and trim
+  name: { type: String, required: true, unique: true, trim: true },
   identity: { type: String, required: true, trim: true },
   primaryLanguage: { type: String, trim: true },
   secondaryLanguage: { type: String, trim: true },
@@ -21,12 +22,10 @@ const SystemPromptSchema = new mongoose.Schema({
   storePhone: { type: String, trim: true },
   storeEmail: { type: String, trim: true },
   openingHours: {
-    // Using a flexible Map for days
     type: Map,
     of: String,
     required: false,
   },
-  // Example: openingHours: { Sunday: "Closed", Monday: "9 AM - 5 PM" }
   availableCategories: [{ type: String }],
   returnPolicy: { type: String, trim: true },
   warrantyPolicy: { type: String, trim: true },
@@ -47,20 +46,35 @@ const SystemPromptSchema = new mongoose.Schema({
     },
   ],
   tools: {
-    // This structure might need to align with how AI SDK expects tools
     name: { type: String, trim: true },
     description: { type: String, trim: true },
     purposes: [{ type: String }],
-    // If tools are more complex (e.g. schema for parameters), adjust here
   },
   privacyAndComplianceGuidelines: { type: String, trim: true },
-  mcpServers: [McpServerSchema], // Use the sub-schema
+  mcpServers: [McpServerSchema],
+  // --- NEW FIELDS ---
+  aiModelName: {
+    type: String,
+    trim: true,
+    required: false, // If not provided, will fallback to env var
+    description:
+      "The specific AI model to use (e.g., 'gemini-1.5-flash-latest', 'gpt-4o'). Falls back to GEMINI_MODEL_NAME env var if not set.",
+  },
+  apiKeyRef: {
+    type: String,
+    trim: true,
+    required: false, // If not provided, will fallback to env var
+    description:
+      "Reference to the 'name' of an API key stored in the ApiKey collection. Falls back to GOOGLE_GENERATIVE_AI_API_KEY env var if not set.",
+  },
+  // --- END NEW FIELDS ---
   updatedAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now },
 });
 
-// Define all indexes in one place
 SystemPromptSchema.index({ updatedAt: -1 });
 SystemPromptSchema.index({ createdAt: -1 });
+// Optional: index apiKeyRef if you query by it often, though SystemPrompts are usually fetched by name.
+// SystemPromptSchema.index({ apiKeyRef: 1 });
 
 export default mongoose.model("SystemPrompt", SystemPromptSchema);
