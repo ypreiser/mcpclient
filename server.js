@@ -5,11 +5,13 @@ import { v4 as uuidv4 } from "uuid";
 import mongoose from "mongoose";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
 
 import logger from "./utils/logger.js"; // Import pino logger
 import systemPromptRoutes from "./routes/systemPromptRoute.js";
 import chatRoutes from "./routes/chatRoute.js";
 import whatsappRoutes from "./routes/whatsappRoute.js";
+import authRoutes, { requireAuth } from "./routes/authRoute.js"; // Import authentication routes and requireAuth middleware
 // initializeAI is not directly used here anymore, mcpClient is a lib
 
 dotenv.config();
@@ -33,8 +35,17 @@ const app = express();
 
 // Security Middlewares
 app.use(helmet()); // Adds various security headers
-app.use(cors()); // Consider more restrictive CORS for production
+
+const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+app.use(
+  cors({
+    origin: allowedOrigin,
+    credentials: true,
+  })
+); // Consider more restrictive CORS for production
+
 app.use(express.json());
+app.use(cookieParser()); // Parse cookies for authentication
 
 // Rate Limiting
 const limiter = rateLimit({
@@ -56,8 +67,51 @@ async function initializeMongoDB() {
     process.exit(1);
   }
 }
+//log incoming requests
+app.use("/", (req, res, next) => {
+  if (req.body?.password) {
+    const bodyWithMaskedPassword = { ...req.body, password: "*****" };
+    logger.info(
+      {
+        method: req.method,
+        path: req.path,
+        body: bodyWithMaskedPassword,
+        cookie: req.cookies ? req.cookies : "No cookies",
+      },
+      "Incoming request"
+    );
+  } else {
+    logger.info(
+      {
+        method: req.method,
+        path: req.path,
+        body: req.body,
+        cookie: req.cookies ? req.cookies : "No cookies",
+      },
+      "Incoming request"
+    );
+  }
+  next();
+});
 
-// Set up routes
+// Protect all /api routes except auth and health
+app.use((req, res, next) => {
+  const openPaths = [
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/register",
+    "/health",
+  ];
+  if (
+    openPaths.includes(req.path) ||
+    (req.path.startsWith("/api/auth/") && req.method === "OPTIONS")
+  ) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+});
+
+app.use("/api/auth", authRoutes);
 app.use("/api/systemprompt", systemPromptRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
@@ -73,7 +127,10 @@ app.get("/health", (req, res) => {
 // Global error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  logger.error({ err, path: req.path, body: req.body }, "Unhandled error occurred");
+  logger.error(
+    { err, path: req.path, body: req.body },
+    "Unhandled error occurred"
+  );
   res.status(err.status || 500).json({
     error: {
       message: err.message || "Internal Server Error",
@@ -82,7 +139,6 @@ app.use((err, req, res, next) => {
     },
   });
 });
-
 
 // Initialize everything and start server
 async function initialize() {

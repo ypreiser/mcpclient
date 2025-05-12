@@ -28,6 +28,11 @@ const chatSchema = new mongoose.Schema({
     enum: ["whatsapp", "webapp"],
     required: true,
   },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
   messages: [messageSchema],
   metadata: {
     userName: { type: String },

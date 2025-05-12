@@ -55,6 +55,12 @@ const SystemPromptSchema = new mongoose.Schema({
   },
   privacyAndComplianceGuidelines: { type: String, trim: true },
   mcpServers: [McpServerSchema], // Use the sub-schema
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+    index: true,
+  },
   updatedAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now },
 });
