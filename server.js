@@ -6,13 +6,11 @@ import mongoose from "mongoose";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
-
-import logger from "./utils/logger.js"; // Import pino logger
+import logger from "./utils/logger.js";
 import systemPromptRoutes from "./routes/systemPromptRoute.js";
-import chatRoutes from "./routes/chatRoute.js";
 import whatsappRoutes from "./routes/whatsappRoute.js";
-import authRoutes, { requireAuth } from "./routes/authRoute.js"; // Import authentication routes and requireAuth middleware
-// initializeAI is not directly used here anymore, mcpClient is a lib
+import authRoutes, { requireAuth } from "./routes/authRoute.js";
+import publicChatRoutes from "./routes/publicChatRoute.js";
 
 dotenv.config();
 const PORT = process.env.PORT || 3000;
@@ -34,7 +32,7 @@ if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
 const app = express();
 
 // Security Middlewares
-app.use(helmet()); // Adds various security headers
+app.use(helmet());
 
 const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:5173";
 app.use(
@@ -42,20 +40,20 @@ app.use(
     origin: allowedOrigin,
     credentials: true,
   })
-); // Consider more restrictive CORS for production
+);
 
 app.use(express.json());
-app.use(cookieParser()); // Parse cookies for authentication
+app.use(cookieParser());
 
 // Rate Limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100"), // limit each IP to 100 requests per windowMs
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  standardHeaders: true,
+  legacyHeaders: false,
   message: "Too many requests from this IP, please try again after 15 minutes",
 });
-app.use("/api/", limiter); // Apply to all API routes
+app.use("/", limiter);
 
 // Initialize MongoDB connection
 async function initializeMongoDB() {
@@ -70,7 +68,7 @@ async function initializeMongoDB() {
 //log incoming requests
 app.use("/", (req, res, next) => {
   if (req.body?.password) {
-    const bodyWithMaskedPassword = { ...req.body, password: "*****" };
+    const bodyWithMaskedPassword = { ...req.body, password: "MASKEDPASSWORD" };
     logger.info(
       {
         method: req.method,
@@ -94,7 +92,7 @@ app.use("/", (req, res, next) => {
   next();
 });
 
-// Protect all /api routes except auth and health
+// Protect all /api routes except auth, health, and public chat endpoints
 app.use((req, res, next) => {
   const openPaths = [
     "/api/auth/login",
@@ -102,8 +100,10 @@ app.use((req, res, next) => {
     "/api/auth/register",
     "/health",
   ];
+  // Allow all /chat/* public endpoints
   if (
     openPaths.includes(req.path) ||
+    req.path.startsWith("/chat/") ||
     (req.path.startsWith("/api/auth/") && req.method === "OPTIONS")
   ) {
     return next();
@@ -113,8 +113,8 @@ app.use((req, res, next) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/systemprompt", systemPromptRoutes);
-app.use("/api/chat", chatRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
+app.use("/chat", publicChatRoutes); // Register public chat routes
 
 // Add utility functions to app.locals
 app.locals.uuidv4 = uuidv4;
@@ -144,8 +144,6 @@ app.use((err, req, res, next) => {
 async function initialize() {
   try {
     await initializeMongoDB();
-    // AI initialization is now handled on-demand by routes/services that need it
-    // or could be pre-initialized for specific global use cases if required.
 
     app.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT}`);

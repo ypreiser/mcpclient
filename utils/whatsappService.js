@@ -26,7 +26,6 @@ const getMongoStore = () => {
     }
     mongoStoreInstance = new MongoStore({
       mongoose: mongoose,
-      // collectionName: "whatsapp_sessions",
     });
     logger.info("MongoStore for WhatsApp initialized.");
   }
@@ -260,14 +259,14 @@ class WhatsAppService {
                 source: "whatsapp",
                 "metadata.connectionName": connectionName,
                 "metadata.tags": [],
-                "metadata.notes": "", // Notes initialized as an empty string
-                messages: [], // Initialize with an empty messages array
+                "metadata.notes": "",
+                messages: [],
               },
               $set: {
                 "metadata.lastActive": new Date(),
-                "metadata.userName": userName, // Update username, it might change
+                "metadata.userName": userName,
               },
-            }, // ---- END OF CORRECTED UPDATE OBJECT ----
+            },
             {
               upsert: true,
               new: true,

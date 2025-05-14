@@ -23,6 +23,11 @@ const messageSchema = new mongoose.Schema(
 
 const chatSchema = new mongoose.Schema({
   sessionId: { type: String, required: true }, // This is the chat identifier (e.g., user's phone number for WhatsApp, UUID for web)
+  systemPromptName: { type: String }, // Track which system prompt is active for this chat
+  systemPromptId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "SystemPrompt",
+  }, // Reference to the system prompt used
   source: {
     type: String,
     enum: ["whatsapp", "webapp"],
@@ -41,7 +46,6 @@ const chatSchema = new mongoose.Schema({
     isArchived: { type: Boolean, default: false },
     tags: [{ type: String }],
     notes: { type: String },
-    systemPromptName: { type: String }, // Track which system prompt is active for this chat
   },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },

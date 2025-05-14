@@ -8,9 +8,11 @@ const router = express.Router();
 // Get all prompts (names only for dropdown lists)
 router.get("/", async (req, res, next) => {
   try {
-    const prompts = await SystemPrompt.find({ userId: req.user._id }).select(
-      "name"
-    );
+    const prompts = await SystemPrompt.find({ userId: req.user._id }).select([
+      "name",
+      "_id",
+      "isActive",
+    ]);
     res.json(prompts);
   } catch (error) {
     logger.error({ err: error }, "Failed to fetch prompt names");
@@ -97,12 +99,10 @@ router.post("/", async (req, res, next) => {
         { err, promptData: req.body },
         "Attempt to create duplicate system prompt"
       );
-      return res
-        .status(409)
-        .json({
-          error: "System prompt with this name already exists",
-          details: err.message,
-        });
+      return res.status(409).json({
+        error: "System prompt with this name already exists",
+        details: err.message,
+      });
     }
     logger.error({ err, promptData: req.body }, "Error saving system prompt");
     next(err);
@@ -172,12 +172,10 @@ router.put("/:name", async (req, res, next) => {
         { err: error, promptName: req.params.name, updateData: req.body },
         "Attempt to update prompt resulted in duplicate name"
       );
-      return res
-        .status(409)
-        .json({
-          error: "Another system prompt with the new name already exists",
-          details: error.message,
-        });
+      return res.status(409).json({
+        error: "Another system prompt with the new name already exists",
+        details: error.message,
+      });
     }
     logger.error(
       { err: error, promptName: req.params.name, updateData: req.body },
