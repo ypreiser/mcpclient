@@ -2,39 +2,44 @@
 import { initializeAI } from "../mcpClient.js";
 import SystemPrompt from "../models/systemPromptModel.js";
 import Chat from "../models/chatModel.js";
+import User from "../models/userModel.js";
+import TokenUsageRecord from "../models/tokenUsageRecordModel.js"; // Import SSoT model
 import { systemPromptToNaturalLanguage } from "../utils/json2llm.js";
 import logger from "../utils/logger.js";
 
-// Global sessions store
 const sessions = new Map();
 
-// Helper functions
 const getSession = (sessionId) => {
   const session = sessions.get(sessionId);
-  return session ? { status: session.status } : { status: "not_found" };
+  if (!session) return { status: "not_found" };
+  return {
+    status: session.status,
+    systemPromptName: session.systemPromptName,
+    userId: session.userId,
+  };
 };
 
-const validateSystemPrompt = async (systemPromptName, userId) => {
+const validateSystemPrompt = async (systemPromptName, userIdExpectedOwner) => {
   const systemPromptDoc = await SystemPrompt.findOne({
     name: systemPromptName,
-    userId: userId,
+    userId: userIdExpectedOwner, // The user who should own this prompt
   });
 
   if (!systemPromptDoc) {
     const promptExists = await SystemPrompt.exists({ name: systemPromptName });
     if (promptExists) {
       logger.warn(
-        { userId, systemPromptName },
-        "Authorization Failed: User attempted to access system prompt they do not own."
+        { userIdExpectedOwner, systemPromptName },
+        "Authorization Failed: User attempted to access system prompt they do not own or was expected to own."
       );
       const authError = new Error(
-        `Access denied: You do not have permission for system prompt '${systemPromptName}'.`
+        `Access denied or ownership mismatch for system prompt '${systemPromptName}'.`
       );
       authError.status = 403;
       throw authError;
     } else {
       logger.warn(
-        { userId, systemPromptName },
+        { userIdExpectedOwner, systemPromptName },
         "Not Found: System prompt requested does not exist."
       );
       const notFoundError = new Error(
@@ -44,7 +49,6 @@ const validateSystemPrompt = async (systemPromptName, userId) => {
       throw notFoundError;
     }
   }
-
   return systemPromptDoc;
 };
 
@@ -52,55 +56,78 @@ const cleanupSession = async (sessionId) => {
   const sessionToClean = sessions.get(sessionId);
   if (sessionToClean) {
     if (sessionToClean.aiInstance?.closeMcpClients) {
-      await sessionToClean.aiInstance.closeMcpClients();
+      try {
+        await sessionToClean.aiInstance.closeMcpClients();
+        logger.info(`MCP clients for session '${sessionId}' closed.`);
+      } catch (err) {
+        logger.error(
+          { err, sessionId },
+          "Error closing MCP clients during session cleanup."
+        );
+      }
     }
     sessions.delete(sessionId);
+    logger.info(`In-memory session '${sessionId}' cleaned up.`);
   }
 };
 
-const initializeSession = async (sessionId, systemPromptName, userId) => {
+const initializeSession = async (
+  sessionId,
+  systemPromptName,
+  userIdForTokenBilling
+) => {
   try {
-    const existingSession = sessions.get(sessionId);
-    if (existingSession) {
-      logger.warn(
-        `Service: Session '${sessionId}' already exists. Aborting new initialization.`
+    if (!userIdForTokenBilling) {
+      logger.error(
+        { sessionId, systemPromptName },
+        "Cannot initialize chat session: userIdForTokenBilling is undefined."
       );
       throw new Error(
-        `Session '${sessionId}' is already being managed. Please end the current session first.`
+        "User ID for token billing is required to initialize chat session."
       );
     }
 
+    if (sessions.has(sessionId)) {
+      logger.warn(
+        `Service: Session '${sessionId}' already exists. Aborting new initialization.`
+      );
+      const err = new Error(`Session '${sessionId}' is already active.`);
+      err.status = 409;
+      throw err;
+    }
+
+    // For chatService (typically webapp), userIdForTokenBilling is the prompt owner's ID.
     const systemPromptDoc = await validateSystemPrompt(
       systemPromptName,
-      userId
+      userIdForTokenBilling
     );
 
     const aiInstance = await initializeAI(systemPromptName);
     const systemPromptText = systemPromptToNaturalLanguage(
-      systemPromptDoc.toObject() // Consider handling ObjectIds more gracefully in json2llm if they are part of the text
+      systemPromptDoc.toObject()
     );
-
-    Object.assign(aiInstance, {
-      systemPromptText,
-      validatedSystemName: systemPromptName,
-      validatedUserId: userId,
-    });
+    Object.assign(aiInstance, { systemPromptText });
 
     sessions.set(sessionId, {
       aiInstance,
       status: "active",
       systemPromptName,
-      userId,
+      userId: userIdForTokenBilling, // User whose tokens will be counted
+      systemPromptId: systemPromptDoc._id, // Store ID for logging
     });
 
     logger.info(
-      `Service: Chat session initialized for '${sessionId}' with system prompt '${systemPromptName}'`
+      `Service: Chat session initialized for '${sessionId}' with prompt '${systemPromptName}'. Tokens billed to user '${userIdForTokenBilling}'.`
     );
-
-    return { status: "active" };
+    return { status: "active", sessionId, systemPromptName };
   } catch (error) {
     logger.error(
-      { err: error, sessionId, systemPromptName },
+      {
+        err: error,
+        sessionId,
+        systemPromptName,
+        userId: userIdForTokenBilling,
+      },
       `Service: Error in initializeSession`
     );
     await cleanupSession(sessionId);
@@ -108,76 +135,78 @@ const initializeSession = async (sessionId, systemPromptName, userId) => {
   }
 };
 
-const processMessage = async (sessionId, message, userId) => {
+const processMessage = async (
+  sessionId,
+  messageContent,
+  userIdForTokenBilling
+) => {
   const session = sessions.get(sessionId);
   if (!session) {
     const notFoundError = new Error(
-      "Chat session not found in memory. Please start a new chat."
+      `Chat session not found (ID: ${sessionId}). Please start new chat.`
     );
     notFoundError.status = 404;
     throw notFoundError;
   }
-
   if (session.status !== "active") {
     const inactiveError = new Error(
-      `Chat session is not active (status: ${session.status})`
+      `Chat session '${sessionId}' is not active (status: ${session.status})`
     );
-    inactiveError.status = 400; // Or another appropriate status
+    inactiveError.status = 400;
     throw inactiveError;
   }
-
-  if (!message || typeof message !== "string" || message.trim().length === 0) {
-    logger.warn(
-      { sessionId, userId, message },
-      "Received empty or invalid message content."
+  if (session.userId.toString() !== userIdForTokenBilling.toString()) {
+    logger.error(
+      {
+        sessionId,
+        messageUserId: userIdForTokenBilling,
+        sessionUserId: session.userId,
+      },
+      "CRITICAL: User ID mismatch in processMessage for chatService."
     );
+    const authError = new Error(
+      "User ID mismatch for session. Cannot process message."
+    );
+    authError.status = 403;
+    throw authError;
+  }
+  if (!messageContent?.trim()) {
     const invalidInputError = new Error("Message content cannot be empty.");
     invalidInputError.status = 400;
     throw invalidInputError;
   }
 
-  const { aiInstance } = session;
+  const { aiInstance, systemPromptId, systemPromptName } = session;
   const { tools, google, GEMINI_MODEL_NAME, generateText, systemPromptText } =
     aiInstance;
 
   try {
-    // Find chat history. For public chats, userId is prompt.userId.
-    // The chat document should have been created by the /start endpoint.
     let chat = await Chat.findOne({
       sessionId,
       source: "webapp",
-      userId, // This is prompt.userId in the public chat flow
+      userId: userIdForTokenBilling, // Chat doc associated with prompt owner
     });
 
     if (!chat) {
-      // This indicates an inconsistency, as /start should create this.
       logger.error(
-        { sessionId, userId, systemPromptName: session.systemPromptName },
-        "CRITICAL: Chat document NOT FOUND in processMessage. This is unexpected if /start was called and succeeded."
+        { sessionId, userId: userIdForTokenBilling },
+        "CRITICAL: Chat document NOT FOUND in processMessage for webapp."
       );
       const notFoundDbError = new Error(
-        `Chat history not found for session ID ${sessionId}. Please try starting a new chat.`
+        `Chat history could not be loaded for session ${sessionId}.`
       );
       notFoundDbError.status = 404;
       throw notFoundDbError;
     }
 
-    // Add current user message to the in-memory chat object's messages array
-    const userMessageEntry = {
+    chat.messages.push({
       role: "user",
-      content: message,
+      content: messageContent,
       timestamp: new Date(),
-    };
-    chat.messages.push(userMessageEntry);
-    chat.updatedAt = new Date();
-    await chat.save();
-
-    const MessagesFromDB = chat.messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-
-    const messagesForAI = [...MessagesFromDB];
+    });
+    const messagesForAI = chat.messages
+      .slice(-20)
+      .map((msg) => ({ role: msg.role, content: msg.content }));
 
     const response = await generateText({
       model: google(GEMINI_MODEL_NAME),
@@ -187,77 +216,132 @@ const processMessage = async (sessionId, message, userId) => {
       messages: messagesForAI,
     });
 
-    const assistantResponseText =
-      response.text ?? "Error: No text in response from AI."; // Provide a clearer default
-    const assistantMessageEntry = {
+    if (response.usage) {
+      const { promptTokens, completionTokens } = response.usage;
+      if (
+        typeof promptTokens === "number" &&
+        typeof completionTokens === "number"
+      ) {
+        const totalTokens = promptTokens + completionTokens;
+        const usageRecord = new TokenUsageRecord({
+          userId: userIdForTokenBilling,
+          systemPromptId: systemPromptId,
+          systemPromptName: systemPromptName,
+          chatId: chat._id,
+          source: "webapp",
+          modelName: GEMINI_MODEL_NAME, // Assuming GEMINI_MODEL_NAME is the actual model used
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          timestamp: new Date(),
+        });
+        await usageRecord.save();
+
+        // Update denormalized counters
+        await User.logTokenUsage({
+          userId: userIdForTokenBilling,
+          promptTokens,
+          completionTokens,
+        });
+        await SystemPrompt.logTokenUsage({
+          systemPromptId,
+          promptTokens,
+          completionTokens,
+        });
+        // Optionally update Chat model counters if you add them there
+
+        logger.info(
+          {
+            userId: userIdForTokenBilling,
+            systemPromptId,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            source: "webapp",
+          },
+          "Token usage logged."
+        );
+      } else {
+        logger.warn(
+          {
+            userId: userIdForTokenBilling,
+            usage: response.usage,
+            source: "webapp",
+          },
+          "Invalid token usage data from AI SDK."
+        );
+      }
+    } else {
+      logger.warn(
+        { userId: userIdForTokenBilling, source: "webapp" },
+        "Token usage data not available from AI SDK."
+      );
+    }
+
+    const assistantResponseText = response.text ?? "AI response was empty.";
+    chat.messages.push({
       role: "assistant",
       content: assistantResponseText,
       timestamp: new Date(),
-    };
-    chat.messages.push(assistantMessageEntry);
-
+      toolCalls: response.toolCalls,
+    });
     chat.updatedAt = new Date();
     await chat.save();
 
     return {
       text: assistantResponseText,
       toolCalls: response.toolCalls,
+      usage: response.usage,
     };
   } catch (error) {
-    // Log the specific aiMessages that caused the error if it's an APICallError
-    if (error.name === "AI_APICallError" && error.requestBodyValues) {
-      logger.error(
-        {
-          err: error,
-          sessionId,
-          userId,
-          failedAiMessages: error.requestBodyValues.contents,
-        },
-        "Error processing message - APICallError details"
-      );
-    } else {
-      logger.error(
-        { err: error, sessionId, userId },
-        "Error processing message"
-      );
-    }
+    logger.error(
+      {
+        err: error,
+        sessionId,
+        userId: userIdForTokenBilling,
+        source: "webapp",
+      },
+      "Error processing webapp message"
+    );
     throw error;
   }
 };
 
-const endSession = async (sessionId, userId) => {
+const endSession = async (sessionId, userIdAuthorizedToEnd) => {
   const session = sessions.get(sessionId);
   if (!session) {
-    return { status: "not_found" };
+    return { status: "not_found", message: `Session ${sessionId} not found.` };
   }
-
-  if (session.userId !== userId) {
-    const authError = new Error("Unauthorized access to chat session");
+  if (session.userId.toString() !== userIdAuthorizedToEnd.toString()) {
+    const authError = new Error("Unauthorized to end this chat session.");
     authError.status = 403;
     throw authError;
   }
 
   try {
     await cleanupSession(sessionId);
-
     const chat = await Chat.findOne({
       sessionId,
       source: "webapp",
-      userId,
+      userId: userIdAuthorizedToEnd,
     });
-
-    if (chat && chat.metadata && !chat.metadata.isArchived) {
-      // Added chat.metadata check
-      if (!chat.metadata) chat.metadata = {}; // Ensure metadata exists
-      chat.metadata.isArchived = true;
-      chat.updatedAt = new Date();
-      await chat.save();
+    if (chat) {
+      if (!chat.metadata) chat.metadata = {};
+      if (!chat.metadata.isArchived) {
+        chat.metadata.isArchived = true;
+        chat.updatedAt = new Date();
+        await chat.save();
+      }
     }
-
-    logger.info(`Service: Session '${sessionId}' ended successfully.`);
-    return { status: "ended" };
+    logger.info(
+      `Service: Session '${sessionId}' ended by user '${userIdAuthorizedToEnd}'.`
+    );
+    return { status: "ended", message: `Session ${sessionId} ended.` };
   } catch (error) {
-    logger.error({ err: error, sessionId }, "Service: Error ending session");
+    logger.error(
+      { err: error, sessionId, userId: userIdAuthorizedToEnd },
+      "Service: Error ending session"
+    );
     throw error;
   }
 };
@@ -268,6 +352,5 @@ const chatService = {
   processMessage,
   endSession,
 };
-
 export default chatService;
 export { initializeSession, getSession, processMessage, endSession };

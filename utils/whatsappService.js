@@ -5,11 +5,12 @@ import mongoose from "mongoose";
 import { initializeAI } from "../mcpClient.js";
 import SystemPrompt from "../models/systemPromptModel.js";
 import Chat from "../models/chatModel.js";
+import User from "../models/userModel.js";
+import TokenUsageRecord from "../models/tokenUsageRecordModel.js"; // Import SSoT model
 import { systemPromptToNaturalLanguage } from "../utils/json2llm.js";
 import logger from "../utils/logger.js";
 
 const { Client, RemoteAuth } = pkg;
-
 const PUPPETEER_AUTH_PATH = process.env.PUPPETEER_AUTH_PATH || "./.wwebjs_auth";
 const PUPPETEER_CACHE_PATH =
   process.env.PUPPETEER_CACHE_PATH || "./.wwebjs_cache";
@@ -19,14 +20,11 @@ const getMongoStore = () => {
   if (!mongoStoreInstance) {
     if (!mongoose.connection || mongoose.connection.readyState !== 1) {
       logger.error("MongoDB connection not ready for MongoStore for WhatsApp.");
-
       throw new Error(
         "MongoDB connection not available for WhatsApp session store."
       );
     }
-    mongoStoreInstance = new MongoStore({
-      mongoose: mongoose,
-    });
+    mongoStoreInstance = new MongoStore({ mongoose: mongoose });
     logger.info("MongoStore for WhatsApp initialized.");
   }
   return mongoStoreInstance;
@@ -34,53 +32,73 @@ const getMongoStore = () => {
 
 class WhatsAppService {
   constructor() {
-    this.sessions = new Map(); // Stores { client, status, qr, systemPromptName, aiInstance }
+    this.sessions = new Map(); // Stores { client, status, qr, systemPromptName, systemPromptId, aiInstance, userId }
   }
 
-  async initializeSession(connectionName, systemPromptName) {
+  async initializeSession(connectionName, systemPromptName, userId) {
     logger.info(
-      `Service: Initializing WhatsApp session. Connection: '${connectionName}', Prompt: '${systemPromptName}'`
+      `Service: Initializing WhatsApp. Conn: '${connectionName}', Prompt: '${systemPromptName}', User: '${userId}'`
     );
+    if (!userId) {
+      logger.error(
+        `Service: User ID is required for WhatsApp session '${connectionName}'.`
+      );
+      throw new Error("User ID is required for session initialization.");
+    }
+
     try {
-      const existingSession = this.sessions.get(connectionName);
-      if (
-        existingSession &&
-        (existingSession.status === "initializing" ||
-          existingSession.status === "qr_ready" ||
-          existingSession.status === "connected" ||
-          existingSession.status === "authenticated")
-      ) {
-        logger.warn(
-          `Service: Session '${connectionName}' already exists with status ${existingSession.status}. Aborting new initialization.`
-        );
-        throw new Error(
-          `Session '${connectionName}' is already being managed. Please disconnect first or use a different name.`
-        );
+      if (this.sessions.has(connectionName)) {
+        const existing = this.sessions.get(connectionName);
+        if (
+          ["initializing", "qr_ready", "connected", "authenticated"].includes(
+            existing.status
+          )
+        ) {
+          logger.warn(
+            `Service: Session '${connectionName}' already managed (status: ${existing.status}).`
+          );
+          throw new Error(
+            `Session '${connectionName}' is already active or being initialized.`
+          );
+        }
       }
 
-      // Fetch and prepare AI components first
       const systemPromptDoc = await SystemPrompt.findOne({
         name: systemPromptName,
+        userId: userId,
       });
       if (!systemPromptDoc) {
-        throw new Error(`System prompt "${systemPromptName}" not found`);
+        // Check if prompt exists but owner is different for a more specific error
+        const promptExistsWithOwner = await SystemPrompt.findOne({
+          name: systemPromptName,
+        });
+        if (promptExistsWithOwner) {
+          logger.warn(
+            { userId, systemPromptName, owner: promptExistsWithOwner.userId },
+            "User attempting to use a WhatsApp connection with a system prompt they do not own."
+          );
+          throw new Error(
+            `Access denied: You do not own system prompt '${systemPromptName}'.`
+          );
+        }
+        throw new Error(
+          `System prompt "${systemPromptName}" not found or not owned by user.`
+        );
       }
 
-      const aiInstance = await initializeAI(systemPromptName);
-      const systemPromptText = systemPromptToNaturalLanguage(
+      const aiInstance = await initializeAI(systemPromptName); // Relies on systemPromptName being unique
+      aiInstance.systemPromptText = systemPromptToNaturalLanguage(
         systemPromptDoc.toObject()
       );
-      aiInstance.systemPromptText = systemPromptText;
 
       const store = getMongoStore();
-
       const client = new Client({
         clientId: connectionName,
         authStrategy: new RemoteAuth({
-          store: store,
+          store,
           clientId: connectionName,
-          backupSyncIntervalMs: 300000, // 5 minutes
-          dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`, // Ensure this directory is writable
+          backupSyncIntervalMs: 300000,
+          dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`,
         }),
         puppeteer: {
           headless: true,
@@ -88,357 +106,334 @@ class WhatsAppService {
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-accelerated-2d-canvas",
-            "--no-first-run",
-            "--no-zygote",
             "--disable-gpu",
-            "--single-process", // May help in resource-constrained envs, monitor
+            "--single-process",
           ],
-          // executablePath: process.env.CHROME_EXECUTABLE_PATH, // Optional: if system Chrome/Chromium is preferred
         },
-        webVersion: "2.2409.2", // Keep pinned, update deliberately
-        webVersionCache: {
-          type: "local", // Or 'remote' if preferred
-          path: PUPPETEER_CACHE_PATH, // Ensure this directory is writable
-        },
+        webVersion: "2.2409.2",
+        webVersionCache: { type: "local", path: PUPPETEER_CACHE_PATH },
       });
 
-      // Store session info immediately
       this.sessions.set(connectionName, {
         client,
         status: "initializing",
         qr: null,
         systemPromptName,
+        systemPromptId: systemPromptDoc._id, // Store systemPromptId
         aiInstance,
+        userId,
       });
       logger.info(
-        `Service: Session entry created for '${connectionName}'. Status: initializing.`
+        `Service: Session entry created for '${connectionName}'. User: ${userId}`
       );
 
-      // Event handlers
-      client.on("qr", (qr) => {
-        logger.info(`Service: QR Code received for '${connectionName}'.`);
-        if (!qr || typeof qr !== "string" || qr.length === 0) {
-          logger.error(
-            `Service: Invalid QR code data received for '${connectionName}'.`
-          );
-          const current = this.sessions.get(connectionName);
-          if (current)
-            this.sessions.set(connectionName, {
-              ...current,
-              status: "qr_error",
-            });
-          return;
-        }
-        const current = this.sessions.get(connectionName);
-        if (current) {
-          this.sessions.set(connectionName, {
-            ...current,
-            qr,
-            status: "qr_ready",
-          });
-          logger.info(
-            `Service: Session for '${connectionName}' updated. Status: qr_ready.`
-          );
-        } else {
-          logger.error(
-            `Service Critical Error: '${connectionName}' not found in map when 'qr' event fired.`
-          );
-        }
-      });
-
-      client.on("ready", () => {
-        logger.info(
-          `Service: WhatsApp client is ready for '${connectionName}'.`
-        );
-        const current = this.sessions.get(connectionName);
-        if (current)
-          this.sessions.set(connectionName, {
-            ...current,
-            status: "connected",
-            qr: null,
-          });
-      });
-
-      client.on("authenticated", () => {
-        logger.info(
-          `Service: WhatsApp client authenticated for '${connectionName}'.`
-        );
-        const current = this.sessions.get(connectionName);
-        if (current)
-          this.sessions.set(connectionName, {
-            ...current,
-            status: "authenticated",
-            qr: null,
-          });
-      });
-
-      client.on("auth_failure", (errorMsg) => {
-        logger.error(
-          `Service: WhatsApp authentication failed for '${connectionName}'. Error: ${errorMsg}`
-        );
-        const current = this.sessions.get(connectionName);
-        if (current)
-          this.sessions.set(connectionName, {
-            ...current,
-            status: "auth_failed",
-          });
-        this.closeSession(connectionName).catch((err) =>
-          logger.error(
-            { err },
-            `Error during auto-cleanup for ${connectionName} on auth_failure`
-          )
-        );
-      });
-
-      client.on("disconnected", (reason) => {
-        logger.warn(
-          `Service: WhatsApp client disconnected for '${connectionName}'. Reason: ${reason}`
-        );
-        const current = this.sessions.get(connectionName);
-        if (current)
-          this.sessions.set(connectionName, {
-            ...current,
-            status: "disconnected",
-          });
-        this.closeSession(connectionName).catch((err) =>
-          logger.error(
-            { err },
-            `Error during auto-cleanup for ${connectionName} on disconnect`
-          )
-        );
-      });
-
-      client.on("message", async (message) => {
-        if (message.fromMe || message.from === "status@broadcast") return;
-        logger.info("Service: Message received");
-
-        const currentSession = this.sessions.get(connectionName);
-        if (!currentSession || !currentSession.aiInstance) {
-          logger.error(
-            `Service: AI not initialized or session not found for '${connectionName}' on message event.`
-          );
-          try {
-            await message.reply(
-              "Sorry, the AI service for this connection is not properly configured."
-            );
-          } catch (replyErr) {
-            logger.error(
-              { err: replyErr },
-              `Failed to send error reply for ${connectionName}`
-            );
-          }
-          return;
-        }
-
-        const {
-          tools,
-          google,
-          GEMINI_MODEL_NAME,
-          generateText,
-          systemPromptText,
-        } = currentSession.aiInstance; // chatHistory is no longer part of aiInstance state here
-
-        let userNumber; // Declare userNumber outside the try block
-
-        try {
-          const contact = await message.getContact();
-          const userName = contact.name || contact.pushname || message.from;
-          userNumber = message.from.split("@")[0]; // Assign value inside the try block
-          logger.info({ contact, userName, userNumber }, "msg metadata");
-
-          let chat = await Chat.findOneAndUpdate(
-            {
-              sessionId: userNumber, // Use the unique user WhatsApp ID
-              "metadata.connectionName": connectionName,
-            },
-            {
-              // ---- START OF CORRECTED UPDATE OBJECT ----
-              $setOnInsert: {
-                sessionId: userNumber,
-                source: "whatsapp",
-                "metadata.connectionName": connectionName,
-                "metadata.tags": [],
-                "metadata.notes": "",
-                messages: [],
-              },
-              $set: {
-                "metadata.lastActive": new Date(),
-                "metadata.userName": userName,
-              },
-            },
-            {
-              upsert: true,
-              new: true,
-              setDefaultsOnInsert: true,
-            }
-          );
-
-          const userMessageEntry = {
-            role: "user",
-            content: message.body,
-            timestamp: new Date(),
-            status: "delivered", // Status of the incoming message
-          };
-          chat.messages.push(userMessageEntry);
-          // Note: chat object is saved after AI response is added.
-
-          // Prepare chat history for the AI from the database
-          const MAX_CONVERSATIONAL_TURNS_FOR_AI = 20; // Number of recent messages (user + assistant) for AI context
-          const recentMessagesFromDB = chat.messages
-            .slice(-MAX_CONVERSATIONAL_TURNS_FOR_AI) // Get last N messages
-            .map((msg) => ({ role: msg.role, content: msg.content })); // Format for AI
-
-          // Construct the contextual metadata message to inform the AI
-          const chatNotes = chat.metadata.notes || "No notes available.";
-          const contextualMetadataMessage = {
-            role: "assistant", // Per requirement, to provide context *to* the assistant
-            content: `You are messaging on WhatsApp with ${userName} (Number: ${userNumber.slice(
-              "@"
-            )}). Associated notes: ${chatNotes}`,
-          };
-
-          // Combine metadata message with recent conversation history for the AI
-          // The current user's message is already included in recentMessagesFromDB
-          const messagesForAI = [
-            contextualMetadataMessage,
-            ...recentMessagesFromDB,
-          ];
-
-          const response = await generateText({
-            model: google(GEMINI_MODEL_NAME),
-            tools,
-            maxSteps: 10, // This is an existing value, ensure it's appropriate for your tools
-            system: systemPromptText,
-            messages: messagesForAI, // Pass the combined list to the AI
-          });
-
-          const assistantMessageEntry = {
-            role: "assistant",
-            content: response.text,
-            timestamp: new Date(),
-            status: "sent", // Initial status for the outgoing message
-          };
-          chat.messages.push(assistantMessageEntry);
-
-          chat.updatedAt = new Date(); // Explicitly set updatedAt
-          await chat.save();
-
-          await message.reply(response.text);
-
-          logger.info(
-            { to: userNumber, connectionName, responseText: response.text },
-            "Service: Sent AI response"
-          );
-        } catch (error) {
-          logger.error(
-            { err: error, connectionName, from: userNumber }, // userNumber is now accessible
-            "Service: Error processing message"
-          );
-          try {
-            await message.reply(
-              "Sorry, I encountered an error processing your message."
-            );
-          } catch (replyErr) {
-            logger.error(
-              { err: replyErr },
-              `Failed to send error reply after processing error for ${connectionName}`
-            );
-          }
-        }
-      });
+      this.registerClientEventHandlers(client, connectionName);
 
       logger.info(
         `Service: Starting WhatsApp client.initialize() for '${connectionName}'...`
       );
-      await client.initialize();
+      await client.initialize(); // This can take time
       logger.info(
-        `Service: client.initialize() completed for '${connectionName}'.`
+        `Service: client.initialize() potentially completed for '${connectionName}'. Status will update via events.`
       );
-
-      return client;
+      return client; // Or just an indication of success, status is tracked internally
     } catch (error) {
       logger.error(
-        { err: error, connectionName },
+        { err: error, connectionName, userId },
         `Service: Error in initializeSession for '${connectionName}'`
       );
-      const sessionToClean = this.sessions.get(connectionName);
-      if (sessionToClean) {
-        if (sessionToClean.client) {
-          try {
-            await sessionToClean.client.destroy();
-            logger.info(
-              `Service: Client for '${connectionName}' destroyed during error cleanup.`
-            );
-          } catch (destroyError) {
-            logger.error(
-              { err: destroyError, connectionName },
-              `Service: Error destroying client during cleanup for '${connectionName}'.`
-            );
-          }
-        }
-        if (
-          sessionToClean.aiInstance &&
-          sessionToClean.aiInstance.closeMcpClients
-        ) {
-          await sessionToClean.aiInstance.closeMcpClients();
-        }
-      }
-      this.sessions.delete(connectionName);
-      logger.info(
-        `Service: Cleaned up session for '${connectionName}' due to initialization error.`
+      await this.cleanupSessionResources(
+        connectionName,
+        error.message.includes("Timeout")
       );
       throw error;
     }
   }
 
+  registerClientEventHandlers(client, connectionName) {
+    client.on("qr", (qr) => {
+      logger.info(`Service: QR Code for '${connectionName}'.`);
+      const current = this.sessions.get(connectionName);
+      if (current)
+        this.sessions.set(connectionName, {
+          ...current,
+          qr,
+          status: "qr_ready",
+        });
+      else
+        logger.error(`Critical: '${connectionName}' not in map on 'qr' event.`);
+    });
+    client.on("ready", () => {
+      logger.info(`Service: WhatsApp client ready for '${connectionName}'.`);
+      const current = this.sessions.get(connectionName);
+      if (current)
+        this.sessions.set(connectionName, {
+          ...current,
+          status: "connected",
+          qr: null,
+        });
+    });
+    client.on("authenticated", () => {
+      logger.info(
+        `Service: WhatsApp client authenticated for '${connectionName}'.`
+      );
+      const current = this.sessions.get(connectionName);
+      if (current)
+        this.sessions.set(connectionName, {
+          ...current,
+          status: "authenticated",
+          qr: null,
+        });
+    });
+    client.on("auth_failure", (msg) => {
+      logger.error(`Service: Auth failure for '${connectionName}': ${msg}`);
+      const current = this.sessions.get(connectionName);
+      if (current)
+        this.sessions.set(connectionName, {
+          ...current,
+          status: "auth_failed",
+        });
+      this.closeSession(connectionName).catch((err) =>
+        logger.error(
+          { err },
+          `Cleanup error for ${connectionName} on auth_failure`
+        )
+      );
+    });
+    client.on("disconnected", (reason) => {
+      logger.warn(
+        `Service: Client disconnected for '${connectionName}'. Reason: ${reason}`
+      );
+      const current = this.sessions.get(connectionName);
+      // If status is already 'closing' or 'closed', don't overwrite to 'disconnected'
+      if (current && !["closing", "closed"].includes(current.status)) {
+        this.sessions.set(connectionName, {
+          ...current,
+          status: "disconnected",
+        });
+      }
+      this.closeSession(connectionName).catch((err) =>
+        logger.error(
+          { err },
+          `Cleanup error for ${connectionName} on disconnect`
+        )
+      );
+    });
+    client.on("message", async (message) =>
+      this.handleIncomingMessage(message, connectionName)
+    );
+  }
+
+  async handleIncomingMessage(message, connectionName) {
+    if (message.fromMe || message.from === "status@broadcast") return;
+    logger.info(
+      `Service: Message received for ${connectionName} from ${message.from}`
+    );
+
+    const currentSession = this.sessions.get(connectionName);
+    if (
+      !currentSession ||
+      !currentSession.aiInstance ||
+      !currentSession.userId ||
+      !currentSession.systemPromptId
+    ) {
+      logger.error(
+        `Service: AI not init, session invalid, or IDs missing for '${connectionName}' on message.`
+      );
+      try {
+        await message.reply(
+          "AI service misconfiguration. Please contact support."
+        );
+      } catch (e) {
+        logger.error({ e }, "Failed to send config error reply");
+      }
+      return;
+    }
+
+    const { aiInstance, userId, systemPromptId, systemPromptName } =
+      currentSession;
+    const { tools, google, GEMINI_MODEL_NAME, generateText, systemPromptText } =
+      aiInstance;
+    const userNumber = message.from.split("@")[0];
+
+    try {
+      const contact = await message.getContact();
+      const userName = contact.name || contact.pushname || message.from;
+
+      let chat = await Chat.findOneAndUpdate(
+        {
+          sessionId: userNumber,
+          "metadata.connectionName": connectionName,
+          source: "whatsapp",
+          userId: userId,
+        },
+        {
+          $setOnInsert: {
+            sessionId: userNumber,
+            source: "whatsapp",
+            userId: userId,
+            systemPromptId: systemPromptId,
+            systemPromptName: systemPromptName,
+            "metadata.connectionName": connectionName,
+            messages: [],
+          },
+          $set: {
+            "metadata.lastActive": new Date(),
+            "metadata.userName": userName,
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      chat.messages.push({
+        role: "user",
+        content: message.body,
+        timestamp: new Date(),
+        status: "delivered",
+      });
+      const messagesForAI = chat.messages
+        .slice(-20)
+        .map((msg) => ({ role: msg.role, content: msg.content }));
+      // Add contextual message if needed
+
+      const response = await generateText({
+        model: google(GEMINI_MODEL_NAME),
+        tools,
+        maxSteps: 10,
+        system: systemPromptText,
+        messages: messagesForAI,
+      });
+
+      if (response.usage) {
+        const { promptTokens, completionTokens } = response.usage;
+        if (
+          typeof promptTokens === "number" &&
+          typeof completionTokens === "number"
+        ) {
+          const totalTokens = promptTokens + completionTokens;
+          const usageRecord = new TokenUsageRecord({
+            userId: userId, // User who owns the WA connection
+            systemPromptId: systemPromptId,
+            systemPromptName: systemPromptName,
+            chatId: chat._id,
+            source: "whatsapp",
+            modelName: GEMINI_MODEL_NAME,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            timestamp: new Date(),
+          });
+          await usageRecord.save();
+
+          await User.logTokenUsage({ userId, promptTokens, completionTokens });
+          await SystemPrompt.logTokenUsage({
+            systemPromptId,
+            promptTokens,
+            completionTokens,
+          });
+          logger.info(
+            {
+              userId,
+              systemPromptId,
+              promptTokens,
+              completionTokens,
+              source: "whatsapp",
+            },
+            "Token usage logged for WhatsApp."
+          );
+        } else {
+          logger.warn(
+            { userId, usage: response.usage, source: "whatsapp" },
+            "Invalid token usage data from AI SDK for WhatsApp."
+          );
+        }
+      } else {
+        logger.warn(
+          { userId, source: "whatsapp" },
+          "Token usage data not available from AI SDK for WhatsApp."
+        );
+      }
+
+      const assistantResponseText =
+        response.text || "No text response from AI.";
+      chat.messages.push({
+        role: "assistant",
+        content: assistantResponseText,
+        timestamp: new Date(),
+        status: "sent",
+      });
+      chat.updatedAt = new Date();
+      await chat.save();
+      await message.reply(assistantResponseText);
+      logger.info(
+        { to: userNumber, connectionName },
+        "Service: Sent AI response via WhatsApp"
+      );
+    } catch (error) {
+      logger.error(
+        { err: error, connectionName, from: userNumber, userId },
+        "Service: Error processing WhatsApp message"
+      );
+      try {
+        await message.reply("Error processing your message.");
+      } catch (e) {
+        logger.error({ e }, "Failed to send processing error reply");
+      }
+    }
+  }
+  async cleanupSessionResources(connectionName, isTimeout = false) {
+    const session = this.sessions.get(connectionName);
+    if (session) {
+      if (session.client) {
+        try {
+          if (!isTimeout) {
+            // If it's a timeout, client.destroy() might hang
+            await session.client.destroy();
+          }
+          logger.info(
+            `Service: Client for '${connectionName}' destroyed during cleanup.`
+          );
+        } catch (destroyError) {
+          logger.error(
+            { err: destroyError, connectionName },
+            `Service: Error destroying client during cleanup.`
+          );
+        }
+      }
+      if (session.aiInstance?.closeMcpClients) {
+        await session.aiInstance.closeMcpClients();
+      }
+      this.sessions.delete(connectionName);
+      logger.info(
+        `Service: Cleaned up session resources for '${connectionName}'.`
+      );
+    }
+  }
+
   async getQRCode(connectionName) {
     const session = this.sessions.get(connectionName);
-    if (!session) {
-      logger.warn(
-        `Service: getQRCode called for non-existent connection: '${connectionName}'.`
-      );
-      return null;
-    }
-    if (
-      session.status !== "qr_ready" ||
-      !session.qr ||
-      typeof session.qr !== "string" ||
-      session.qr.length === 0
-    ) {
-      logger.warn(
-        `Service: QR code not ready or invalid for '${connectionName}'. Status: ${session.status}.`
-      );
-      return null;
-    }
-    logger.info(
-      `Service: Getting QR Code for '${connectionName}'. Status: ${session.status}.`
-    );
+    if (!session) return null;
+    if (session.status !== "qr_ready" || !session.qr) return null;
     return session.qr;
   }
 
   async getStatus(connectionName) {
     const session = this.sessions.get(connectionName);
-    if (!session) {
-      return "not_found";
-    }
-    return session.status || "unknown";
+    return session ? session.status : "not_found";
   }
 
   async sendMessage(connectionName, to, messageText) {
     const session = this.sessions.get(connectionName);
-    if (!session || !session.client) {
-      throw new Error(`Connection client not found for '${connectionName}'.`);
-    }
-    if (session.status !== "connected" && session.status !== "authenticated") {
+    if (
+      !session?.client ||
+      !["connected", "authenticated"].includes(session.status)
+    ) {
       throw new Error(
-        `WhatsApp client for '${connectionName}' is not connected (status: ${session.status}).`
+        `WhatsApp client for '${connectionName}' not ready (status: ${
+          session?.status || "N/A"
+        }).`
       );
     }
-    logger.info(
-      { connectionName, to, messageText },
-      `Service: Sending message via '${connectionName}'.`
-    );
     return session.client.sendMessage(to, messageText);
   }
 
@@ -449,31 +444,32 @@ class WhatsAppService {
     const session = this.sessions.get(connectionName);
 
     if (session) {
+      session.status = "closing"; // Mark as closing
       if (session.client) {
         try {
-          await session.client.logout();
+          await session.client.logout(); // Graceful logout
           logger.info(
             `Service: WhatsApp client logged out for '${connectionName}'.`
           );
         } catch (logoutError) {
           logger.error(
             { err: logoutError, connectionName },
-            `Service: Error logging out client for '${connectionName}'. Attempting destroy.`
+            `Error logging out client, will proceed to destroy.`
           );
         }
         try {
-          await session.client.destroy();
+          await session.client.destroy(); // Destroy client resources
           logger.info(
             `Service: WhatsApp client destroyed for '${connectionName}'.`
           );
         } catch (destroyError) {
           logger.error(
             { err: destroyError, connectionName },
-            `Service: Error destroying client for '${connectionName}'.`
+            `Error destroying client for '${connectionName}'.`
           );
         }
       }
-      if (session.aiInstance && session.aiInstance.closeMcpClients) {
+      if (session.aiInstance?.closeMcpClients) {
         try {
           await session.aiInstance.closeMcpClients();
           logger.info(
@@ -482,16 +478,20 @@ class WhatsAppService {
         } catch (aiCloseError) {
           logger.error(
             { err: aiCloseError, connectionName },
-            `Service: Error closing AI MCP clients for '${connectionName}'.`
+            `Error closing AI MCP clients.`
           );
         }
       }
-      this.sessions.delete(connectionName);
+      session.status = "closed";
+      this.sessions.delete(connectionName); // Remove from map
+      logger.info(
+        `Service: Connection '${connectionName}' fully closed and resources cleaned.`
+      );
+    } else {
+      logger.warn(
+        `Service: Attempted to close non-existent or already cleaned session '${connectionName}'.`
+      );
     }
-
-    logger.info(
-      `Service: All resources for connection '${connectionName}' cleaned up.`
-    );
     return true;
   }
 }

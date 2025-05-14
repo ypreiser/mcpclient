@@ -11,10 +11,7 @@ const McpServerSchema = new mongoose.Schema(
 );
 
 const SystemPromptSchema = new mongoose.Schema({
-  // TODO: make name unique per user. e.g. 2 users can have a system prompt with the same name
-  // but not the same name for the same user
-
-  name: { type: String, required: true, unique: true, trim: true }, // Added unique and trim
+  name: { type: String, required: true, unique: true, trim: true },
   identity: { type: String, required: true, trim: true },
   primaryLanguage: { type: String, trim: true },
   secondaryLanguage: { type: String, trim: true },
@@ -24,12 +21,10 @@ const SystemPromptSchema = new mongoose.Schema({
   storePhone: { type: String, trim: true },
   storeEmail: { type: String, trim: true },
   openingHours: {
-    // Using a flexible Map for days
     type: Map,
     of: String,
     required: false,
   },
-  // Example: openingHours: { Sunday: "Closed", Monday: "9 AM - 5 PM" }
   availableCategories: [{ type: String }],
   returnPolicy: { type: String, trim: true },
   warrantyPolicy: { type: String, trim: true },
@@ -50,15 +45,14 @@ const SystemPromptSchema = new mongoose.Schema({
     },
   ],
   tools: {
-    // This structure might need to align with how AI SDK expects tools
     name: { type: String, trim: true },
     description: { type: String, trim: true },
     purposes: [{ type: String }],
-    // If tools are more complex (e.g. schema for parameters), adjust here
   },
   privacyAndComplianceGuidelines: { type: String, trim: true },
-  mcpServers: [McpServerSchema], // Use the sub-schema
+  mcpServers: [McpServerSchema],
   userId: {
+    // The user who owns this system prompt
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true,
@@ -66,11 +60,59 @@ const SystemPromptSchema = new mongoose.Schema({
   },
   updatedAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now },
-  isActive: { type: Boolean, default: true },
+  isActive: { type: Boolean, default: true }, // For public listing
+
+  // Token usage aggregates for this system prompt
+  totalPromptTokensUsed: { type: Number, default: 0, required: true },
+  totalCompletionTokensUsed: { type: Number, default: 0, required: true },
+  totalTokensUsed: { type: Number, default: 0, required: true },
+  lastUsedAt: { type: Date },
 });
 
-// Define all indexes in one place
+// Indexes
+SystemPromptSchema.index({ userId: 1, name: 1 }, { unique: true }); // Ensures name is unique per user
 SystemPromptSchema.index({ updatedAt: -1 });
 SystemPromptSchema.index({ createdAt: -1 });
+SystemPromptSchema.index({ isActive: 1, name: 1 }); // For querying active prompts
+
+// Pre-save hook to update `updatedAt`
+SystemPromptSchema.pre("save", function (next) {
+  if (this.isModified()) {
+    // Only update if actually modified to prevent versioning issues
+    this.updatedAt = new Date();
+  }
+  next();
+});
+
+SystemPromptSchema.statics.logTokenUsage = async function ({
+  systemPromptId,
+  promptTokens,
+  completionTokens,
+}) {
+  if (
+    !systemPromptId ||
+    typeof promptTokens !== "number" ||
+    promptTokens < 0 ||
+    typeof completionTokens !== "number" ||
+    completionTokens < 0
+  ) {
+    throw new Error(
+      "Invalid input for logging token usage to SystemPrompt model."
+    );
+  }
+  const totalTokens = promptTokens + completionTokens;
+  return this.findByIdAndUpdate(
+    systemPromptId,
+    {
+      $inc: {
+        totalPromptTokensUsed: promptTokens,
+        totalCompletionTokensUsed: completionTokens,
+        totalTokensUsed: totalTokens,
+      },
+      $set: { lastUsedAt: new Date() },
+    },
+    { new: true }
+  );
+};
 
 export default mongoose.model("SystemPrompt", SystemPromptSchema);

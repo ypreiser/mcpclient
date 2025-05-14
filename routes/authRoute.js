@@ -1,22 +1,29 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose"; // For ObjectId validation
 import User from "../models/userModel.js";
 import logger from "../utils/logger.js";
 
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  logger.fatal(
+    "JWT_SECRET is not set. Application will not function securely."
+  );
+  process.exit(1);
+}
+
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production", // set to true in production
+  secure: process.env.NODE_ENV === "production",
   sameSite: "strict",
   maxAge: 1000 * 60 * 60 * 24, // 1 day
   path: "/",
 };
 
-// Registration endpoint
-router.post("/register", async (req, res) => {
+router.post("/register", async (req, res, next) => {
   try {
     const { email, password, name } = req.body;
     if (!email || !password) {
@@ -24,49 +31,73 @@ router.post("/register", async (req, res) => {
         .status(400)
         .json({ error: "Email and password are required." });
     }
-    const existing = await User.findOne({ email });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: "Invalid email format." });
+    }
+    if (password.length < 8) {
+      return res
+        .status(400)
+        .json({ error: "Password must be at least 8 characters long." });
+    }
+
+    const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
       return res.status(409).json({ error: "Email already registered." });
     }
     const hashed = await bcrypt.hash(password, 12);
-    const user = await User.create({ email, password: hashed, name });
-    res.status(201).json({ message: "User registered." });
+    const user = new User({
+      email: email.toLowerCase(),
+      password: hashed,
+      name,
+    });
+    await user.save();
+    logger.info(
+      { email: user.email, userId: user._id },
+      "User registered successfully"
+    );
+    res
+      .status(201)
+      .json({
+        message: "User registered successfully.",
+        userId: user._id,
+        email: user.email,
+      });
   } catch (err) {
-    res.status(500).json({ error: "Registration failed." });
+    logger.error({ err, email: req.body.email }, "Registration failed.");
+    next(err);
   }
 });
 
-// Login endpoint
-router.post("/login", async (req, res) => {
+router.post("/login", async (req, res, next) => {
   const { email, password } = req.body;
-
   const ip = req.ip || req.socket?.remoteAddress;
-  const logMeta = { email, ip, time: new Date().toISOString() };
+  const logMeta = { email: email?.toLowerCase(), ip };
+
   try {
     if (!email || !password) {
       logger.warn(
         { ...logMeta, success: false, reason: "Missing credentials" },
-        "Login attempt failed"
+        "Login attempt: Missing credentials"
       );
       return res
         .status(400)
         .json({ error: "Email and password are required." });
     }
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       logger.warn(
         { ...logMeta, success: false, reason: "User not found" },
-        "Login attempt failed"
+        "Login attempt: User not found"
       );
-      return res.status(401).json({ error: "Invalid credentials." });
+      return res.status(401).json({ error: "Invalid email or password." });
     }
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
       logger.warn(
         { ...logMeta, success: false, reason: "Invalid password" },
-        "Login attempt failed"
+        "Login attempt: Invalid password"
       );
-      return res.status(401).json({ error: "Invalid credentials." });
+      return res.status(401).json({ error: "Invalid email or password." });
     }
     const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
       expiresIn: "1d",
@@ -77,66 +108,125 @@ router.post("/login", async (req, res) => {
       "Login successful"
     );
     res.json({
+      message: "Login successful.",
       user: { email: user.email, name: user.name, userId: user._id },
     });
   } catch (err) {
-    logger.error(
-      { ...logMeta, success: false, error: err.message },
-      "Login attempt error"
-    );
-    res.status(500).json({ error: "Login failed." });
+    logger.error({ ...logMeta, success: false, err }, "Login attempt error");
+    next(err);
   }
 });
 
-// Logout endpoint
 router.post("/logout", (req, res) => {
   res.clearCookie("token", COOKIE_OPTIONS);
-  res.json({ message: "Logged out." });
+  logger.info({ userId: req.user?._id, ip: req.ip }, "User logged out.");
+  res.status(200).json({ message: "Logged out successfully." });
 });
 
-// Middleware to check JWT in cookie
 export async function requireAuth(req, res, next) {
   const token = req.cookies?.token;
+  const logMeta = { ip: req.ip, path: req.originalUrl, method: req.method };
+
   if (!token) {
-    logger.warn(
-      { ip: req.ip, time: new Date().toISOString() },
-      "Authentication failed: No token provided"
-    );
+    logger.warn({ ...logMeta }, "Auth failed: No token");
     return res
       .status(401)
-      .json({ error: "Authentication failed: No token provided" });
+      .json({ error: "Authentication required. No token provided." });
   }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const userId = decoded.userId;
-    if (!userId) {
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
       logger.warn(
-        { ip: req.ip, time: new Date().toISOString(), token },
-        "Authentication failed: Invalid token payload"
+        { ...logMeta, tokenPayload: decoded },
+        "Auth failed: Invalid token payload"
       );
+      res.clearCookie("token", COOKIE_OPTIONS);
       return res
         .status(401)
-        .json({ error: "Authentication failed: Invalid token payload" });
+        .json({ error: "Authentication failed: Invalid token." });
     }
-    const user = await User.findById(userId);
+
+    const user = await User.findById(userId).select("-password");
     if (!user) {
       logger.warn(
-        { ip: req.ip, time: new Date().toISOString(), userId, token },
-        "Authentication failed: User not found"
+        { ...logMeta, userId },
+        "Auth failed: User not found for token"
       );
+      res.clearCookie("token", COOKIE_OPTIONS);
       return res
         .status(401)
-        .json({ error: "Authentication failed: User not found" });
+        .json({ error: "Authentication failed: User not found." });
     }
-    req.user = user; // Attach user object for downstream use
+    req.user = user;
     next();
   } catch (err) {
     logger.warn(
-      { ip: req.ip, time: new Date().toISOString(), error: err?.message },
-      "Authentication failed: Invalid or expired token"
+      { ...logMeta, errorName: err.name, errorMsg: err.message },
+      "Auth failed: Token verification error"
     );
-    res.status(401).json({ error: "Invalid or expired token." });
+    res.clearCookie("token", COOKIE_OPTIONS);
+    let publicError = "Invalid or expired token.";
+    if (err.name === "TokenExpiredError")
+      publicError = "Token expired. Please log in again.";
+    res.status(401).json({ error: publicError });
   }
 }
+
+router.get("/me", requireAuth, async (req, res, next) => {
+  try {
+    // req.user is populated by requireAuth and is fresh enough for basic details.
+    // For token usage, which might update frequently, re-fetching ensures latest data.
+    const user = await User.findById(req.user._id).select(
+      "email name createdAt totalLifetimePromptTokens totalLifetimeCompletionTokens totalLifetimeTokens monthlyTokenUsageHistory quotaTokensAllowedPerMonth quotaMonthStartDate lastTokenUsageUpdate"
+    );
+
+    if (!user) {
+      logger.warn(
+        { userId: req.user._id },
+        "User disappeared after auth for /me"
+      );
+      return res.status(404).json({ error: "User not found." });
+    }
+    // Convert Map to a plain object for JSON response, if necessary, or ensure client handles Map.
+    // Mongoose Maps usually serialize to objects fine.
+    const monthlyUsageObject = {};
+    if (user.monthlyTokenUsageHistory) {
+      for (const [key, value] of user.monthlyTokenUsageHistory) {
+        monthlyUsageObject[key] = value.toObject ? value.toObject() : value; // Ensure sub-docs are plain objects
+      }
+    }
+
+    res.json({
+      user: {
+        userId: user._id,
+        email: user.email,
+        name: user.name,
+        createdAt: user.createdAt,
+        tokenUsage: {
+          lifetime: {
+            promptTokens: user.totalLifetimePromptTokens,
+            completionTokens: user.totalLifetimeCompletionTokens,
+            totalTokens: user.totalLifetimeTokens,
+          },
+          monthlyHistory: monthlyUsageObject, // Send the converted object
+          quota: {
+            allowedPerMonth: user.quotaTokensAllowedPerMonth,
+            currentMonthStartDate: user.quotaMonthStartDate,
+            // You might calculate current month's usage here if not relying on monthlyTokenUsageHistory["CURRENT_YYYY-MM"]
+          },
+          lastUsageUpdate: user.lastTokenUsageUpdate,
+        },
+      },
+    });
+  } catch (error) {
+    logger.error(
+      { err: error, userId: req.user?._id },
+      "Error fetching user details for /me"
+    );
+    next(error);
+  }
+});
 
 export default router;
