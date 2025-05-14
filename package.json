@@ -1,21 +1,4 @@
 {
-  "dependencies": {
-    "@ai-sdk/anthropic": "^1.2.10",
-    "@ai-sdk/google": "^1.2.13",
-    "ai": "^4.3.9",
-    "cors": "^2.8.5",
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "express-rate-limit": "^7.3.1",
-    "helmet": "^7.1.0",
-    "mongoose": "^8.1.0",
-    "pino": "^8.17.2",
-    "pino-pretty": "^10.3.1",
-    "qrcode": "^1.5.3",
-    "uuid": "^9.0.1",
-    "whatsapp-web.js": "^1.27.0",
-    "wwebjs-mongo": "^1.1.0"
-  },
   "name": "ai-sdk",
   "version": "1.0.0",
   "type": "module",
@@ -32,5 +15,24 @@
   "description": "",
   "devDependencies": {
     "eslint": "^8.57.0"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.10",
+    "@ai-sdk/google": "^1.2.13",
+    "ai": "^4.3.9",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^7.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.1.0",
+    "pino": "^8.17.2",
+    "pino-pretty": "^10.3.1",
+    "qrcode": "^1.5.3",
+    "uuid": "^9.0.1",
+    "whatsapp-web.js": "^1.27.0",
+    "wwebjs-mongo": "^1.1.0"
   }
 }

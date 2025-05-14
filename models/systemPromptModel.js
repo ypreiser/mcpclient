@@ -11,6 +11,9 @@ const McpServerSchema = new mongoose.Schema(
 );
 
 const SystemPromptSchema = new mongoose.Schema({
+  // TODO: make name unique per user. e.g. 2 users can have a system prompt with the same name
+  // but not the same name for the same user
+
   name: { type: String, required: true, unique: true, trim: true }, // Added unique and trim
   identity: { type: String, required: true, trim: true },
   primaryLanguage: { type: String, trim: true },
@@ -55,8 +58,15 @@ const SystemPromptSchema = new mongoose.Schema({
   },
   privacyAndComplianceGuidelines: { type: String, trim: true },
   mcpServers: [McpServerSchema], // Use the sub-schema
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+    index: true,
+  },
   updatedAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now },
+  isActive: { type: Boolean, default: true },
 });
 
 // Define all indexes in one place

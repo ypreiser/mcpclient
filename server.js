@@ -5,12 +5,12 @@ import { v4 as uuidv4 } from "uuid";
 import mongoose from "mongoose";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-
-import logger from "./utils/logger.js"; // Import pino logger
+import cookieParser from "cookie-parser";
+import logger from "./utils/logger.js";
 import systemPromptRoutes from "./routes/systemPromptRoute.js";
-import chatRoutes from "./routes/chatRoute.js";
 import whatsappRoutes from "./routes/whatsappRoute.js";
-// initializeAI is not directly used here anymore, mcpClient is a lib
+import authRoutes, { requireAuth } from "./routes/authRoute.js";
+import publicChatRoutes from "./routes/publicChatRoute.js";
 
 dotenv.config();
 const PORT = process.env.PORT || 3000;
@@ -32,19 +32,28 @@ if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
 const app = express();
 
 // Security Middlewares
-app.use(helmet()); // Adds various security headers
-app.use(cors()); // Consider more restrictive CORS for production
+app.use(helmet());
+
+const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+app.use(
+  cors({
+    origin: allowedOrigin,
+    credentials: true,
+  })
+);
+
 app.use(express.json());
+app.use(cookieParser());
 
 // Rate Limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100"), // limit each IP to 100 requests per windowMs
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  standardHeaders: true,
+  legacyHeaders: false,
   message: "Too many requests from this IP, please try again after 15 minutes",
 });
-app.use("/api/", limiter); // Apply to all API routes
+app.use("/", limiter);
 
 // Initialize MongoDB connection
 async function initializeMongoDB() {
@@ -56,11 +65,56 @@ async function initializeMongoDB() {
     process.exit(1);
   }
 }
+//log incoming requests
+app.use("/", (req, res, next) => {
+  if (req.body?.password) {
+    const bodyWithMaskedPassword = { ...req.body, password: "MASKEDPASSWORD" };
+    logger.info(
+      {
+        method: req.method,
+        path: req.path,
+        body: bodyWithMaskedPassword,
+        cookie: req.cookies ? req.cookies : "No cookies",
+      },
+      "Incoming request"
+    );
+  } else {
+    logger.info(
+      {
+        method: req.method,
+        path: req.path,
+        body: req.body,
+        cookie: req.cookies ? req.cookies : "No cookies",
+      },
+      "Incoming request"
+    );
+  }
+  next();
+});
 
-// Set up routes
+// Protect all /api routes except auth, health, and public chat endpoints
+app.use((req, res, next) => {
+  const openPaths = [
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/register",
+    "/health",
+  ];
+  // Allow all /chat/* public endpoints
+  if (
+    openPaths.includes(req.path) ||
+    req.path.startsWith("/chat/") ||
+    (req.path.startsWith("/api/auth/") && req.method === "OPTIONS")
+  ) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+});
+
+app.use("/api/auth", authRoutes);
 app.use("/api/systemprompt", systemPromptRoutes);
-app.use("/api/chat", chatRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
+app.use("/chat", publicChatRoutes); // Register public chat routes
 
 // Add utility functions to app.locals
 app.locals.uuidv4 = uuidv4;
@@ -73,7 +127,10 @@ app.get("/health", (req, res) => {
 // Global error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  logger.error({ err, path: req.path, body: req.body }, "Unhandled error occurred");
+  logger.error(
+    { err, path: req.path, body: req.body },
+    "Unhandled error occurred"
+  );
   res.status(err.status || 500).json({
     error: {
       message: err.message || "Internal Server Error",
@@ -83,13 +140,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-
 // Initialize everything and start server
 async function initialize() {
   try {
     await initializeMongoDB();
-    // AI initialization is now handled on-demand by routes/services that need it
-    // or could be pre-initialized for specific global use cases if required.
 
     app.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT}`);
