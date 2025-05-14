@@ -8,11 +8,13 @@ import logger from "../utils/logger.js";
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
+if (!JWT_SECRET && process.env.NODE_ENV !== "test") {
   logger.fatal(
     "JWT_SECRET is not set. Application will not function securely."
   );
   process.exit(1);
+} else if (!JWT_SECRET) {
+  logger.warn("JWT_SECRET not set in test environment");
 }
 
 const COOKIE_OPTIONS = {
@@ -55,13 +57,11 @@ router.post("/register", async (req, res, next) => {
       { email: user.email, userId: user._id },
       "User registered successfully"
     );
-    res
-      .status(201)
-      .json({
-        message: "User registered successfully.",
-        userId: user._id,
-        email: user.email,
-      });
+    res.status(201).json({
+      message: "User registered successfully.",
+      userId: user._id,
+      email: user.email,
+    });
   } catch (err) {
     logger.error({ err, email: req.body.email }, "Registration failed.");
     next(err);
@@ -99,26 +99,35 @@ router.post("/login", async (req, res, next) => {
       );
       return res.status(401).json({ error: "Invalid email or password." });
     }
-    const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
-      expiresIn: "1d",
-    });
+    const token = jwt.sign(
+      { userId: user._id },
+      JWT_SECRET || "test-secret-key",
+      {
+        expiresIn: "1d",
+      }
+    );
     res.cookie("token", token, COOKIE_OPTIONS);
     logger.info(
       { ...logMeta, success: true, userId: user._id },
       "Login successful"
     );
-    res.json({
+    res.status(200).json({
       message: "Login successful.",
       user: { email: user.email, name: user.name, userId: user._id },
     });
   } catch (err) {
     logger.error({ ...logMeta, success: false, err }, "Login attempt error");
-    next(err);
+    res.status(500).json({ error: "An error occurred during login." });
   }
 });
 
 router.post("/logout", (req, res) => {
-  res.clearCookie("token", COOKIE_OPTIONS);
+  // Set cookie options with maxAge: 0 for immediate expiry
+  const clearOptions = {
+    ...COOKIE_OPTIONS,
+    maxAge: 0,
+  };
+  res.clearCookie("token", clearOptions);
   logger.info({ userId: req.user?._id, ip: req.ip }, "User logged out.");
   res.status(200).json({ message: "Logged out successfully." });
 });
@@ -134,7 +143,7 @@ export async function requireAuth(req, res, next) {
       .json({ error: "Authentication required. No token provided." });
   }
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET || "test-secret-key");
     const userId = decoded.userId;
 
     if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {

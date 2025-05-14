@@ -6,14 +6,19 @@ import { initializeAI } from "../mcpClient.js";
 import SystemPrompt from "../models/systemPromptModel.js";
 import Chat from "../models/chatModel.js";
 import User from "../models/userModel.js";
-import TokenUsageRecord from "../models/tokenUsageRecordModel.js"; // Import SSoT model
+import TokenUsageRecord from "../models/tokenUsageRecordModel.js";
 import { systemPromptToNaturalLanguage } from "../utils/json2llm.js";
 import logger from "../utils/logger.js";
 
 const { Client, RemoteAuth } = pkg;
+
 const PUPPETEER_AUTH_PATH = process.env.PUPPETEER_AUTH_PATH || "./.wwebjs_auth";
 const PUPPETEER_CACHE_PATH =
   process.env.PUPPETEER_CACHE_PATH || "./.wwebjs_cache";
+
+const MAX_RECONNECT_ATTEMPTS = 5; // Max number of times to try reconnecting
+const RECONNECT_INITIAL_DELAY_MS = 5000; // Initial delay for first reconnect attempt (e.g., 5 seconds)
+// Subsequent delays will be RECONNECT_INITIAL_DELAY_MS * attemptNumber
 
 let mongoStoreInstance;
 const getMongoStore = () => {
@@ -32,13 +37,28 @@ const getMongoStore = () => {
 
 class WhatsAppService {
   constructor() {
-    this.sessions = new Map(); // Stores { client, status, qr, systemPromptName, systemPromptId, aiInstance, userId }
+    this.sessions = new Map();
+    // Stores { client, status, qr, systemPromptName, systemPromptId, aiInstance, userId,
+    //          isReconnecting: false, reconnectAttempts: 0 }
   }
 
-  async initializeSession(connectionName, systemPromptName, userId) {
+  async initializeSession(
+    connectionName,
+    systemPromptName,
+    userId,
+    isRetry = false
+  ) {
+    const sessionInfoLog = `Conn: '${connectionName}', Prompt: '${systemPromptName}', User: '${userId}'`;
     logger.info(
-      `Service: Initializing WhatsApp. Conn: '${connectionName}', Prompt: '${systemPromptName}', User: '${userId}'`
+      `Service: Initializing WhatsApp. ${sessionInfoLog}${
+        isRetry
+          ? ` (Retry Attempt ${
+              this.sessions.get(connectionName)?.reconnectAttempts || 0
+            })`
+          : ""
+      }`
     );
+
     if (!userId) {
       logger.error(
         `Service: User ID is required for WhatsApp session '${connectionName}'.`
@@ -46,21 +66,36 @@ class WhatsAppService {
       throw new Error("User ID is required for session initialization.");
     }
 
+    const existingSession = this.sessions.get(connectionName);
+
     try {
-      if (this.sessions.has(connectionName)) {
-        const existing = this.sessions.get(connectionName);
+      if (existingSession && !isRetry) {
         if (
-          ["initializing", "qr_ready", "connected", "authenticated"].includes(
-            existing.status
-          )
+          [
+            "initializing",
+            "qr_ready",
+            "connected",
+            "authenticated",
+            "reconnecting",
+          ].includes(existingSession.status)
         ) {
           logger.warn(
-            `Service: Session '${connectionName}' already managed (status: ${existing.status}).`
+            `Service: Session '${connectionName}' already managed (status: ${existingSession.status}). Not a retry.`
           );
           throw new Error(
-            `Session '${connectionName}' is already active or being initialized.`
+            `Session '${connectionName}' is already active, being initialized, or reconnecting.`
           );
         }
+      }
+      // If it's not a retry, but the session thinks it's reconnecting, something is odd.
+      // This might happen if a manual init is attempted while an auto-reconnect is scheduled.
+      if (existingSession && existingSession.isReconnecting && !isRetry) {
+        logger.warn(
+          `Service: Session '${connectionName}' is already in a reconnection process. Aborting new manual initialization.`
+        );
+        throw new Error(
+          `Session '${connectionName}' is currently attempting to reconnect. Please wait or close the session first.`
+        );
       }
 
       const systemPromptDoc = await SystemPrompt.findOne({
@@ -68,7 +103,6 @@ class WhatsAppService {
         userId: userId,
       });
       if (!systemPromptDoc) {
-        // Check if prompt exists but owner is different for a more specific error
         const promptExistsWithOwner = await SystemPrompt.findOne({
           name: systemPromptName,
         });
@@ -86,7 +120,7 @@ class WhatsAppService {
         );
       }
 
-      const aiInstance = await initializeAI(systemPromptName); // Relies on systemPromptName being unique
+      const aiInstance = await initializeAI(systemPromptName);
       aiInstance.systemPromptText = systemPromptToNaturalLanguage(
         systemPromptDoc.toObject()
       );
@@ -95,7 +129,7 @@ class WhatsAppService {
       const client = new Client({
         clientId: connectionName,
         authStrategy: new RemoteAuth({
-          store,
+          store: store,
           clientId: connectionName,
           backupSyncIntervalMs: 300000,
           dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`,
@@ -108,23 +142,40 @@ class WhatsAppService {
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--single-process",
+            "--disable-accelerated-2d-canvas",
+            "--no-first-run",
+            "--no-zygote",
           ],
         },
-        webVersion: "2.2409.2",
+        webVersion: "2.2409.2", // Pin version
         webVersionCache: { type: "local", path: PUPPETEER_CACHE_PATH },
       });
 
-      this.sessions.set(connectionName, {
-        client,
-        status: "initializing",
-        qr: null,
-        systemPromptName,
-        systemPromptId: systemPromptDoc._id, // Store systemPromptId
-        aiInstance,
-        userId,
-      });
+      if (!isRetry || !existingSession) {
+        this.sessions.set(connectionName, {
+          client,
+          status: "initializing",
+          qr: null,
+          systemPromptName,
+          systemPromptId: systemPromptDoc._id,
+          aiInstance,
+          userId,
+          isReconnecting: isRetry, // if first attempt of retry, set to true
+          reconnectAttempts: isRetry
+            ? existingSession?.reconnectAttempts || 1
+            : 0, // Start with 1 if it's the first retry call
+        });
+      } else {
+        // It's a retry, update existing session entry
+        existingSession.client = client;
+        existingSession.status = "initializing"; // Reset status for re-initialization
+        // reconnectAttempts is managed by handleDisconnect
+        // isReconnecting should already be true if we are in a retry
+      }
       logger.info(
-        `Service: Session entry created for '${connectionName}'. User: ${userId}`
+        `Service: Session entry ${
+          isRetry ? "updated for retry" : "created"
+        } for '${connectionName}'. User: ${userId}`
       );
 
       this.registerClientEventHandlers(client, connectionName);
@@ -133,104 +184,246 @@ class WhatsAppService {
         `Service: Starting WhatsApp client.initialize() for '${connectionName}'...`
       );
       await client.initialize(); // This can take time
+
+      // If initialize completes without error, it's considered a step towards connection.
+      // Actual 'connected' or 'authenticated' status comes from events.
+      // If this was a retry, reset attempts as initialization itself was successful.
+      const current = this.sessions.get(connectionName);
+      if (current && isRetry) {
+        // Successful initialization during a retry cycle means we can reset attempts for *this* cycle.
+        // The 'ready' or 'authenticated' event will fully clear the 'isReconnecting' flag.
+        logger.info(
+          `Client.initialize() succeeded for retry of ${connectionName}. Waiting for ready/auth event.`
+        );
+      }
       logger.info(
-        `Service: client.initialize() potentially completed for '${connectionName}'. Status will update via events.`
+        `Service: client.initialize() completed for '${connectionName}'. Status will update via events.`
       );
-      return client; // Or just an indication of success, status is tracked internally
+      return client;
     } catch (error) {
       logger.error(
-        { err: error, connectionName, userId },
+        { err: error, connectionName, userId, isRetry },
         `Service: Error in initializeSession for '${connectionName}'`
       );
-      await this.cleanupSessionResources(
-        connectionName,
-        error.message.includes("Timeout")
-      );
-      throw error;
+      const sessionBeingHandled = this.sessions.get(connectionName);
+      // If it's not a retry OR if it is a retry but the session is no longer marked as reconnecting (e.g., QR shown), then cleanup.
+      if (
+        sessionBeingHandled &&
+        (!isRetry || !sessionBeingHandled.isReconnecting)
+      ) {
+        await this.cleanupSessionResources(
+          connectionName,
+          error.message.includes("Timeout")
+        );
+      } else if (
+        sessionBeingHandled &&
+        isRetry &&
+        sessionBeingHandled.isReconnecting
+      ) {
+        logger.warn(
+          `Initialize failed during reconnect for ${connectionName}. Reconnect attempt ${sessionBeingHandled.reconnectAttempts} failed. HandleDisconnect will manage further retries.`
+        );
+      }
+      throw error; // Re-throw so the caller (or retry logic in handleDisconnect) knows it failed
     }
   }
 
   registerClientEventHandlers(client, connectionName) {
     client.on("qr", (qr) => {
-      logger.info(`Service: QR Code for '${connectionName}'.`);
+      logger.info(
+        `Service: QR Code received for '${connectionName}'. Manual scan required.`
+      );
       const current = this.sessions.get(connectionName);
-      if (current)
-        this.sessions.set(connectionName, {
-          ...current,
-          qr,
-          status: "qr_ready",
-        });
-      else
-        logger.error(`Critical: '${connectionName}' not in map on 'qr' event.`);
+      if (current) {
+        current.qr = qr;
+        current.status = "qr_ready";
+        current.isReconnecting = false; // QR means session lost, stop auto-reconnect cycle
+        current.reconnectAttempts = 0; // Reset attempts
+        logger.info(
+          `Session ${connectionName} status updated to qr_ready. Reconnection attempts stopped.`
+        );
+      } else {
+        logger.error(
+          `CRITICAL: Session '${connectionName}' not found in map when 'qr' event fired.`
+        );
+      }
     });
+
     client.on("ready", () => {
-      logger.info(`Service: WhatsApp client ready for '${connectionName}'.`);
+      logger.info(`Service: WhatsApp client is ready for '${connectionName}'.`);
       const current = this.sessions.get(connectionName);
-      if (current)
-        this.sessions.set(connectionName, {
-          ...current,
-          status: "connected",
-          qr: null,
-        });
+      if (current) {
+        current.status = "connected";
+        current.qr = null;
+        current.isReconnecting = false;
+        current.reconnectAttempts = 0;
+      }
     });
+
     client.on("authenticated", () => {
       logger.info(
         `Service: WhatsApp client authenticated for '${connectionName}'.`
       );
       const current = this.sessions.get(connectionName);
-      if (current)
-        this.sessions.set(connectionName, {
-          ...current,
-          status: "authenticated",
-          qr: null,
-        });
-    });
-    client.on("auth_failure", (msg) => {
-      logger.error(`Service: Auth failure for '${connectionName}': ${msg}`);
-      const current = this.sessions.get(connectionName);
-      if (current)
-        this.sessions.set(connectionName, {
-          ...current,
-          status: "auth_failed",
-        });
-      this.closeSession(connectionName).catch((err) =>
-        logger.error(
-          { err },
-          `Cleanup error for ${connectionName} on auth_failure`
-        )
-      );
-    });
-    client.on("disconnected", (reason) => {
-      logger.warn(
-        `Service: Client disconnected for '${connectionName}'. Reason: ${reason}`
-      );
-      const current = this.sessions.get(connectionName);
-      // If status is already 'closing' or 'closed', don't overwrite to 'disconnected'
-      if (current && !["closing", "closed"].includes(current.status)) {
-        this.sessions.set(connectionName, {
-          ...current,
-          status: "disconnected",
-        });
+      if (current) {
+        current.status = "authenticated";
+        current.qr = null;
+        current.isReconnecting = false;
+        current.reconnectAttempts = 0;
       }
-      this.closeSession(connectionName).catch((err) =>
-        logger.error(
-          { err },
-          `Cleanup error for ${connectionName} on disconnect`
-        )
-      );
     });
+
+    client.on("auth_failure", async (errorMsg) => {
+      logger.error(
+        `Service: WhatsApp authentication failed for '${connectionName}'. Error: ${errorMsg}`
+      );
+      const current = this.sessions.get(connectionName);
+      if (current) {
+        current.status = "auth_failed";
+        current.isReconnecting = false; // Stop reconnection attempts
+      }
+      // Auth failure usually requires manual intervention (new QR scan)
+      await this.closeSession(connectionName, true); // forceClose = true
+    });
+
+    client.on("disconnected", (reason) => {
+      // This is a critical event for reconnection
+      logger.warn(
+        `Service: WhatsApp client disconnected for '${connectionName}'. Reason: ${reason}`
+      );
+      this.handleDisconnect(connectionName, reason);
+    });
+
     client.on("message", async (message) =>
       this.handleIncomingMessage(message, connectionName)
     );
   }
 
+  async handleDisconnect(connectionName, reason) {
+    const session = this.sessions.get(connectionName);
+
+    // If session doesn't exist, or was intentionally closed/failed auth, or already handling a reconnect cycle.
+    if (
+      !session ||
+      session.status === "closed" ||
+      session.status === "closed_forced" ||
+      session.status === "auth_failed"
+    ) {
+      logger.info(
+        `HandleDisconnect: Session ${connectionName} not found, already closed, or auth failed. No reconnect action. Status: ${session?.status}`
+      );
+      return;
+    }
+
+    // If already in a reconnecting state and this is just another disconnect event for the failing client, let the existing loop handle it.
+    // However, if it's a new disconnect event for a previously stable session, then proceed.
+    if (
+      session.isReconnecting &&
+      (session.status === "reconnecting" || session.status === "initializing")
+    ) {
+      logger.info(
+        `HandleDisconnect: Session ${connectionName} is already in a reconnect/init cycle. Ignoring duplicate disconnect event.`
+      );
+      return;
+    }
+
+    session.status = "reconnecting";
+    session.isReconnecting = true;
+    session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
+
+    logger.info(
+      `Session ${connectionName} disconnected. Attempting reconnect ${session.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}. Reason: ${reason}`
+    );
+
+    if (session.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      logger.error(
+        `Failed to reconnect ${connectionName} after ${MAX_RECONNECT_ATTEMPTS} attempts. Giving up.`
+      );
+      session.isReconnecting = false;
+      session.status = "disconnected_permanent"; // Indicate final failure
+      await this.closeSession(connectionName, true); // forceClose after max attempts
+      return;
+    }
+
+    // Destroy the old client instance before attempting to create a new one
+    if (session.client) {
+      try {
+        await session.client.destroy();
+        logger.info(
+          `Old client for ${connectionName} destroyed before reconnect attempt ${session.reconnectAttempts}.`
+        );
+      } catch (e) {
+        logger.error(
+          { err: e },
+          `Error destroying old client for ${connectionName} during reconnect prep.`
+        );
+      }
+      session.client = null; // Clear the reference
+    }
+
+    const delay = RECONNECT_INITIAL_DELAY_MS * session.reconnectAttempts; // Simple exponential backoff
+    logger.info(
+      `Scheduling reconnect attempt for ${connectionName} in ${
+        delay / 1000
+      } seconds.`
+    );
+
+    setTimeout(async () => {
+      const currentSessionState = this.sessions.get(connectionName);
+      // Check if session still exists and is still marked for reconnection
+      if (!currentSessionState || !currentSessionState.isReconnecting) {
+        logger.info(
+          `Reconnect attempt for ${connectionName} aborted: Session removed or reconnection flag cleared (e.g., QR shown, or manually closed).`
+        );
+        return;
+      }
+      try {
+        logger.info(
+          `Executing scheduled reconnect for ${connectionName} (Attempt ${currentSessionState.reconnectAttempts})`
+        );
+        await this.initializeSession(
+          connectionName,
+          currentSessionState.systemPromptName,
+          currentSessionState.userId,
+          true
+        );
+        // If initializeSession succeeds, it (or subsequent ready/auth events) will reset isReconnecting & reconnectAttempts.
+      } catch (error) {
+        logger.error(
+          { err: error },
+          `Scheduled reconnect attempt ${currentSessionState.reconnectAttempts} for ${connectionName} failed during initializeSession.`
+        );
+        // If initializeSession itself fails during a retry, the 'disconnected' event might not fire again immediately.
+        // We need to ensure the loop continues or stops.
+        // We can call handleDisconnect again to re-evaluate, but this must be done carefully to avoid tight loops.
+        // For now, if initializeSession throws, the error is logged. The next 'disconnected' event (if the broken client causes one)
+        // or a manual intervention would be the next step. A more advanced system might have a max duration for the 'reconnecting' state.
+        // Let's assume that if init fails, it might eventually lead to another 'disconnected' or the user intervenes.
+        // The `isReconnecting` flag stays true, so if another disconnect event happens, `handleDisconnect` will pick it up.
+        // If `initializeSession` failed catastrophically, it should have cleaned up its own client.
+      }
+    }, delay);
+  }
+
   async handleIncomingMessage(message, connectionName) {
     if (message.fromMe || message.from === "status@broadcast") return;
+    // Basic check, more detailed check inside the try block
+    const currentSessionCheck = this.sessions.get(connectionName);
+    if (
+      !currentSessionCheck ||
+      !["connected", "authenticated"].includes(currentSessionCheck.status)
+    ) {
+      logger.warn(
+        `Message for ${connectionName} from ${message.from} received but session not in connected/authenticated state (Status: ${currentSessionCheck?.status}). Ignoring.`
+      );
+      return;
+    }
+
     logger.info(
       `Service: Message received for ${connectionName} from ${message.from}`
     );
 
-    const currentSession = this.sessions.get(connectionName);
+    const currentSession = this.sessions.get(connectionName); // Re-fetch, though likely same
     if (
       !currentSession ||
       !currentSession.aiInstance ||
@@ -238,14 +431,17 @@ class WhatsAppService {
       !currentSession.systemPromptId
     ) {
       logger.error(
-        `Service: AI not init, session invalid, or IDs missing for '${connectionName}' on message.`
+        `Service: Critical - Session data invalid for '${connectionName}' on message event. (AI: ${!!currentSession?.aiInstance}, UserID: ${!!currentSession?.userId}, PromptID: ${!!currentSession?.systemPromptId})`
       );
       try {
         await message.reply(
-          "AI service misconfiguration. Please contact support."
+          "Sorry, the AI service for this connection is not properly configured. Please contact support."
         );
-      } catch (e) {
-        logger.error({ e }, "Failed to send config error reply");
+      } catch (replyErr) {
+        logger.error(
+          { err: replyErr },
+          `Failed to send config error reply for ${connectionName}`
+        );
       }
       return;
     }
@@ -275,12 +471,13 @@ class WhatsAppService {
             systemPromptId: systemPromptId,
             systemPromptName: systemPromptName,
             "metadata.connectionName": connectionName,
+            "metadata.userName": userName,
             messages: [],
           },
           $set: {
             "metadata.lastActive": new Date(),
             "metadata.userName": userName,
-          },
+          }, // Ensure userName is updated
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
@@ -294,7 +491,6 @@ class WhatsAppService {
       const messagesForAI = chat.messages
         .slice(-20)
         .map((msg) => ({ role: msg.role, content: msg.content }));
-      // Add contextual message if needed
 
       const response = await generateText({
         model: google(GEMINI_MODEL_NAME),
@@ -312,7 +508,7 @@ class WhatsAppService {
         ) {
           const totalTokens = promptTokens + completionTokens;
           const usageRecord = new TokenUsageRecord({
-            userId: userId, // User who owns the WA connection
+            userId: userId,
             systemPromptId: systemPromptId,
             systemPromptName: systemPromptName,
             chatId: chat._id,
@@ -375,45 +571,87 @@ class WhatsAppService {
         "Service: Error processing WhatsApp message"
       );
       try {
-        await message.reply("Error processing your message.");
-      } catch (e) {
-        logger.error({ e }, "Failed to send processing error reply");
+        await message.reply(
+          "Sorry, I encountered an error processing your message."
+        );
+      } catch (replyErr) {
+        logger.error(
+          { err: replyErr },
+          `Failed to send processing error reply for ${connectionName}`
+        );
       }
     }
   }
-  async cleanupSessionResources(connectionName, isTimeout = false) {
+
+  async cleanupSessionResources(connectionName, isPuppeteerTimeout = false) {
     const session = this.sessions.get(connectionName);
     if (session) {
       if (session.client) {
-        try {
-          if (!isTimeout) {
-            // If it's a timeout, client.destroy() might hang
-            await session.client.destroy();
-          }
-          logger.info(
-            `Service: Client for '${connectionName}' destroyed during cleanup.`
+        if (isPuppeteerTimeout) {
+          logger.warn(
+            `Puppeteer timeout for ${connectionName}, client.destroy() will be skipped to avoid hanging.`
           );
-        } catch (destroyError) {
+        } else {
+          try {
+            await session.client.destroy();
+            logger.info(
+              `Service: Client for '${connectionName}' destroyed during resource cleanup.`
+            );
+          } catch (destroyError) {
+            logger.error(
+              { err: destroyError, connectionName },
+              `Service: Error destroying client during resource cleanup.`
+            );
+          }
+        }
+        session.client = null; // Clear client reference
+      }
+      if (session.aiInstance?.closeMcpClients) {
+        try {
+          await session.aiInstance.closeMcpClients();
+          logger.info(
+            `MCP Clients closed for ${connectionName} during resource cleanup.`
+          );
+        } catch (e) {
           logger.error(
-            { err: destroyError, connectionName },
-            `Service: Error destroying client during cleanup.`
+            { err: e, connectionName },
+            "Error closing MCP clients during resource cleanup."
           );
         }
       }
-      if (session.aiInstance?.closeMcpClients) {
-        await session.aiInstance.closeMcpClients();
+      // Only delete from map if not actively trying to reconnect or if it's a final "giving up" state
+      if (
+        !session.isReconnecting ||
+        session.status === "disconnected_permanent" ||
+        session.status === "closed_forced" ||
+        session.status === "auth_failed"
+      ) {
+        this.sessions.delete(connectionName);
+        logger.info(
+          `Service: Session '${connectionName}' removed from map during resource cleanup.`
+        );
+      } else {
+        logger.info(
+          `Service: Resources partially cleaned for '${connectionName}'. Session kept in map as isReconnecting=${session.isReconnecting}, status=${session.status}.`
+        );
       }
-      this.sessions.delete(connectionName);
-      logger.info(
-        `Service: Cleaned up session resources for '${connectionName}'.`
-      );
     }
   }
 
   async getQRCode(connectionName) {
     const session = this.sessions.get(connectionName);
-    if (!session) return null;
-    if (session.status !== "qr_ready" || !session.qr) return null;
+    if (!session) {
+      logger.warn(
+        `Service: getQRCode called for non-existent connection: '${connectionName}'.`
+      );
+      return null;
+    }
+    if (session.status !== "qr_ready" || !session.qr) {
+      logger.warn(
+        `Service: QR code not ready or invalid for '${connectionName}'. Status: ${session.status}.`
+      );
+      return null;
+    }
     return session.qr;
   }
 
@@ -425,51 +663,73 @@ class WhatsAppService {
   async sendMessage(connectionName, to, messageText) {
     const session = this.sessions.get(connectionName);
     if (
-      !session?.client ||
+      !session ||
+      !session.client ||
       !["connected", "authenticated"].includes(session.status)
     ) {
       throw new Error(
-        `WhatsApp client for '${connectionName}' not ready (status: ${
+        `WhatsApp client for '${connectionName}' is not ready (status: ${
           session?.status || "N/A"
-        }).`
+        }). Cannot send message.`
       );
     }
+    logger.info(
+      { connectionName, to },
+      `Service: Sending message via '${connectionName}'.`
+    );
     return session.client.sendMessage(to, messageText);
   }
 
-  async closeSession(connectionName) {
+  async closeSession(connectionName, forceClose = false) {
     logger.info(
-      `Service: Attempting to close connection: '${connectionName}'.`
+      `Service: Attempting to close connection: '${connectionName}'. Force close: ${forceClose}`
     );
     const session = this.sessions.get(connectionName);
 
     if (session) {
-      session.status = "closing"; // Mark as closing
+      session.isReconnecting = false; // Explicitly stop any reconnection attempts
+      session.status = forceClose ? "closed_forced" : "closing";
+
       if (session.client) {
         try {
-          await session.client.logout(); // Graceful logout
-          logger.info(
-            `Service: WhatsApp client logged out for '${connectionName}'.`
-          );
+          if (!forceClose && typeof session.client.logout === "function") {
+            // Check if logout exists
+            await session.client.logout();
+            logger.info(
+              `Service: WhatsApp client logged out for '${connectionName}'.`
+            );
+          } else if (forceClose) {
+            logger.info(
+              `Service: Force close, skipping logout for '${connectionName}'.`
+            );
+          }
         } catch (logoutError) {
           logger.error(
             { err: logoutError, connectionName },
-            `Error logging out client, will proceed to destroy.`
+            `Error logging out client for '${connectionName}'. Proceeding to destroy.`
           );
         }
         try {
-          await session.client.destroy(); // Destroy client resources
-          logger.info(
-            `Service: WhatsApp client destroyed for '${connectionName}'.`
-          );
+          if (typeof session.client.destroy === "function") {
+            // Check if destroy exists
+            await session.client.destroy();
+            logger.info(
+              `Service: WhatsApp client destroyed for '${connectionName}'.`
+            );
+          }
         } catch (destroyError) {
           logger.error(
             { err: destroyError, connectionName },
             `Error destroying client for '${connectionName}'.`
           );
         }
+        session.client = null; // Clear client reference
       }
-      if (session.aiInstance?.closeMcpClients) {
+
+      if (
+        session.aiInstance &&
+        typeof session.aiInstance.closeMcpClients === "function"
+      ) {
         try {
           await session.aiInstance.closeMcpClients();
           logger.info(
@@ -478,14 +738,14 @@ class WhatsAppService {
         } catch (aiCloseError) {
           logger.error(
             { err: aiCloseError, connectionName },
-            `Error closing AI MCP clients.`
+            `Error closing AI MCP clients for '${connectionName}'.`
           );
         }
       }
-      session.status = "closed";
-      this.sessions.delete(connectionName); // Remove from map
+      // Final removal from map
+      this.sessions.delete(connectionName);
       logger.info(
-        `Service: Connection '${connectionName}' fully closed and resources cleaned.`
+        `Service: Connection '${connectionName}' fully closed, resources cleaned, and removed from map.`
       );
     } else {
       logger.warn(

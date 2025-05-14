@@ -141,20 +141,28 @@ app.use((err, req, res, next) => {
 });
 
 // Initialize everything and start server
-async function initialize() {
+export async function startServer() {
+  // Renamed initialize to startServer
   try {
     await initializeMongoDB();
-
-    app.listen(PORT, () => {
-      logger.info(`Server is running on port ${PORT}`);
-    });
+    // Only listen if not in test environment or if explicitly told to
+    if (
+      process.env.NODE_ENV !== "test" ||
+      process.env.START_SERVER === "true"
+    ) {
+      const serverInstance = app.listen(PORT, () => {
+        // Store server instance
+        logger.info(`Server is running on port ${PORT}`);
+      });
+      return serverInstance; // Return for potential programmatic closing
+    }
+    logger.info("Server initialized for testing (not listening on port).");
+    return null; // Or return the app itself if preferred for testing
   } catch (error) {
     logger.error({ err: error }, "Failed to initialize server:");
     process.exit(1);
   }
 }
-
-initialize();
 
 // Handle cleanup on server shutdown
 const gracefulShutdown = async (signal) => {
@@ -171,3 +179,20 @@ const gracefulShutdown = async (signal) => {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT")); // Handle Ctrl+C
+
+// Start server only if this file is run directly (not imported)
+// and not in test mode unless explicitly stated
+if (import.meta.url === `file://${process.argv[1]}`) {
+  // Check if run directly
+  if (process.env.NODE_ENV !== "test" || process.env.START_SERVER === "true") {
+    startServer().then((serverInstance) => {
+      if (serverInstance) {
+        const shutdown = (signal) => gracefulShutdown(signal, serverInstance);
+        process.on("SIGTERM", () => shutdown("SIGTERM"));
+        process.on("SIGINT", () => shutdown("SIGINT"));
+      }
+    });
+  }
+}
+
+export default app; // Export the app for testing

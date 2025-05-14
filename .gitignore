@@ -9,3 +9,6 @@ node_modules/
 sessions/
 *.log
 .DS_Store
+coverage
+coverage/
+
