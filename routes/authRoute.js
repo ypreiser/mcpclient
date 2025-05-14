@@ -8,13 +8,17 @@ import logger from "../utils/logger.js";
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET && process.env.NODE_ENV !== "test") {
-  logger.fatal(
-    "JWT_SECRET is not set. Application will not function securely."
-  );
-  process.exit(1);
-} else if (!JWT_SECRET) {
-  logger.warn("JWT_SECRET not set in test environment");
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === "test") {
+    // In test environment, just log a warning
+    logger.warn("JWT_SECRET not set in test environment");
+  } else {
+    // In non-test environments, exit with error
+    logger.fatal(
+      "JWT_SECRET is not set. Application will not function securely."
+    );
+    process.exit(1);
+  }
 }
 
 const COOKIE_OPTIONS = {

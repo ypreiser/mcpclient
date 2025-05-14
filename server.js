@@ -181,10 +181,14 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT")); // Handle Ctrl+C
 
 // Start server only if this file is run directly (not imported)
-// and not in test mode unless explicitly stated
 if (import.meta.url === `file://${process.argv[1]}`) {
   // Check if run directly
-  if (process.env.NODE_ENV !== "test" || process.env.START_SERVER === "true") {
+  // Only skip server start if explicitly in test mode without START_SERVER flag
+  const isTestMode =
+    process.env.NODE_ENV === "test" && process.env.START_SERVER !== "true";
+  const isDev = process.env.NODE_ENV === "development" || !process.env.NODE_ENV;
+
+  if (!isTestMode || isDev) {
     startServer().then((serverInstance) => {
       if (serverInstance) {
         const shutdown = (signal) => gracefulShutdown(signal, serverInstance);
