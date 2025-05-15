@@ -51,23 +51,6 @@ const chatSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
-// Define all indexes in one place to avoid duplicates
-chatSchema.index(
-  { sessionId: 1, source: 1, "metadata.connectionName": 1 },
-  {
-    unique: true,
-    partialFilterExpression: { source: "whatsapp" },
-  }
-);
-
-chatSchema.index(
-  { sessionId: 1, source: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { source: "webapp" },
-  }
-);
-
 chatSchema.index({ "metadata.lastActive": -1 });
 chatSchema.index({ source: 1 });
 chatSchema.index({ createdAt: 1 });

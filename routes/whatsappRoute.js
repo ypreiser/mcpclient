@@ -18,28 +18,25 @@ router.post("/session", async (req, res, next) => {
     typeof connectionName !== "string" ||
     connectionName.trim() === ""
   ) {
-    return res
-      .status(400)
-      .json({
-        error: "Connection name is required and must be a non-empty string.",
-      });
+    return res.status(400).json({
+      error: "Connection name is required and must be a non-empty string.",
+    });
   }
   if (
     !systemPromptName ||
     typeof systemPromptName !== "string" ||
     systemPromptName.trim() === ""
   ) {
-    return res
-      .status(400)
-      .json({
-        error: "System prompt name is required and must be a non-empty string.",
-      });
+    return res.status(400).json({
+      error: "System prompt name is required and must be a non-empty string.",
+    });
   }
 
   try {
     const client = await whatsappService.initializeSession(
       connectionName,
-      systemPromptName
+      systemPromptName,
+      userId
     );
     // Client object itself is complex, just return status.
     // The status is now managed within whatsappService.sessions map
@@ -72,12 +69,10 @@ router.get("/session/:connectionName/qr", async (req, res, next) => {
       const status = await whatsappService.getStatus(connectionName);
       if (status === "not_found")
         return res.status(404).json({ error: "Session not found." });
-      return res
-        .status(404)
-        .json({
-          error: "QR code not available or session not in QR state.",
-          status,
-        });
+      return res.status(404).json({
+        error: "QR code not available or session not in QR state.",
+        status,
+      });
     }
 
     const qrDataUrl = await QRCode.toDataURL(qrString);
@@ -119,12 +114,10 @@ router.post("/session/:connectionName/message", async (req, res, next) => {
     typeof message !== "string" ||
     message.trim() === ""
   ) {
-    return res
-      .status(400)
-      .json({
-        error:
-          "Receiver 'to' and 'message' are required and must be non-empty strings.",
-      });
+    return res.status(400).json({
+      error:
+        "Receiver 'to' and 'message' are required and must be non-empty strings.",
+    });
   }
 
   try {
@@ -140,12 +133,10 @@ router.post("/session/:connectionName/message", async (req, res, next) => {
       "API: Error sending message"
     );
     if (error.message.includes("not connected")) {
-      return res
-        .status(409)
-        .json({
-          error: error.message,
-          status: await whatsappService.getStatus(connectionName),
-        });
+      return res.status(409).json({
+        error: error.message,
+        status: await whatsappService.getStatus(connectionName),
+      });
     }
     if (error.message.includes("not found")) {
       return res.status(404).json({ error: error.message });
