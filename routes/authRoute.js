@@ -191,9 +191,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
   try {
     // req.user is populated by requireAuth and is fresh enough for basic details.
     // For token usage, which might update frequently, re-fetching ensures latest data.
-    const user = await User.findById(req.user._id).select(
-      "email name createdAt totalLifetimePromptTokens totalLifetimeCompletionTokens totalLifetimeTokens monthlyTokenUsageHistory quotaTokensAllowedPerMonth quotaMonthStartDate lastTokenUsageUpdate"
-    );
+    const user = await User.findById(req.user._id);
 
     if (!user) {
       logger.warn(
@@ -216,6 +214,7 @@ router.get("/me", requireAuth, async (req, res, next) => {
         userId: user._id,
         email: user.email,
         name: user.name,
+        privilegeLevel: user.privlegeLevel,
         createdAt: user.createdAt,
         tokenUsage: {
           lifetime: {
