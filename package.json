@@ -4,12 +4,12 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "start": "cross-env NODE_ENV=production node starter.js",
+    "dev": "cross-env NODE_ENV=dev node starter.js --watch",
     "lint": "eslint .",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "cov": "vitest run --coverage"
+    "test": "cross-env NODE_ENV=test vitest run",
+    "test:watch": "cross-env NODE_ENV=test vitest",
+    "cov": "cross-env NODE_ENV=test vitest run --coverage"
   },
   "keywords": [],
   "author": "",
@@ -32,6 +32,7 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
+    "express-validator": "^7.2.1",
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.1.0",
