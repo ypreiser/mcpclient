@@ -1,3 +1,4 @@
+import e from "express";
 import mongoose from "mongoose";
 
 const MonthlyUsageSchema = new mongoose.Schema(
@@ -19,6 +20,7 @@ const UserSchema = new mongoose.Schema({
     lowercase: true,
   },
   password: { type: String, required: true }, // Hashed password
+  privlegeLevel: { type: String, enum: ["user", "admin"], default: "user" }, // User roles
   name: { type: String, trim: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },

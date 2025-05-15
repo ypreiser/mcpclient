@@ -11,6 +11,8 @@ import systemPromptRoutes from "./routes/systemPromptRoute.js";
 import whatsappRoutes from "./routes/whatsappRoute.js";
 import authRoutes, { requireAuth } from "./routes/authRoute.js";
 import publicChatRoutes from "./routes/publicChatRoute.js";
+import adminRoutes from "./routes/adminRoute.js";
+import chatRoutes from "./routes/chatRoute.js";
 import { body, validationResult } from "express-validator";
 
 // Load environment variables
@@ -62,7 +64,7 @@ app.use("/", limiter);
 // Stricter rate limiting for authentication routes
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5, // stricter for auth routes
+  max: 100, // stricter for auth routes
 });
 app.use("/api/auth/", authLimiter);
 
@@ -177,6 +179,8 @@ app.use("/api/auth", setCookieSecurely, authRoutes);
 app.use("/api/systemprompt", systemPromptRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/chat", publicChatRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/chats", chatRoutes);
 
 // Add utility functions to app.locals
 app.locals.uuidv4 = uuidv4;
