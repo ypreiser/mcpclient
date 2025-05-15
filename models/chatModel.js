@@ -17,6 +17,16 @@ const messageSchema = new mongoose.Schema(
       enum: ["sent", "delivered", "read", "failed", "pending"],
       default: "sent",
     },
+    // Attachments: array of file metadata (if any)
+    attachments: [
+      {
+        url: { type: String, required: true }, // Path or S3 URL
+        originalName: { type: String, required: true },
+        mimeType: { type: String, required: true },
+        size: { type: Number, required: true },
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { _id: true }
 ); // Ensure subdocuments get IDs if needed, or disable if not

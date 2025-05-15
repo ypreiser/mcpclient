@@ -14,6 +14,9 @@ import publicChatRoutes from "./routes/publicChatRoute.js";
 import adminRoutes from "./routes/adminRoute.js";
 import chatRoutes from "./routes/chatRoute.js";
 import { body, validationResult } from "express-validator";
+import upload from "./utils/uploadMiddleware.js";
+import fs from "fs";
+import path from "path";
 
 // Load environment variables
 dotenv.config();
@@ -173,6 +176,33 @@ app.post(
     res.status(200).json({ success: true });
   }
 );
+
+// File upload endpoint (authenticated)
+app.post("/api/upload", requireAuth, upload.single("file"), (req, res) => {
+  // Security: Only allow authenticated users, validate file presence
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded." });
+  }
+  // Store file metadata for chat message attachment
+  const fileMeta = {
+    url: `/uploads/${req.file.filename}`,
+    originalName: req.file.originalname,
+    mimeType: req.file.mimetype,
+    size: req.file.size,
+    uploadedAt: new Date(),
+  };
+  res.status(201).json({ file: fileMeta });
+});
+
+// Serve uploaded files securely (with auth)
+app.get("/uploads/:filename", requireAuth, (req, res) => {
+  const filePath = path.join(process.cwd(), "uploads", req.params.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "File not found." });
+  }
+  // Optionally: Check user permissions here
+  res.sendFile(filePath);
+});
 
 // Register routes
 app.use("/api/auth", setCookieSecurely, authRoutes);

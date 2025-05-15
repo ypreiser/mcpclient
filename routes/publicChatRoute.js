@@ -99,7 +99,7 @@ router.post("/:systemPromptId/start", async (req, res) => {
 router.post("/:systemPromptId/msg", async (req, res) => {
   try {
     const { systemPromptId } = req.params;
-    const { sessionId, message } = req.body;
+    const { sessionId, message, attachments } = req.body;
     if (!sessionId || !message) {
       return res
         .status(400)
@@ -109,7 +109,8 @@ router.post("/:systemPromptId/msg", async (req, res) => {
     const response = await chatService.processMessage(
       sessionId,
       message,
-      prompt.userId // Use prompt creator's userId
+      prompt.userId, // Use prompt creator's userId
+      attachments // Pass attachments to chatService
     );
 
     res.json({ response: response.text });

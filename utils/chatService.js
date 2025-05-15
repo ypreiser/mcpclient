@@ -138,7 +138,8 @@ const initializeSession = async (
 const processMessage = async (
   sessionId,
   messageContent,
-  userIdForTokenBilling
+  userIdForTokenBilling,
+  attachments = [] // Accept attachments
 ) => {
   const session = sessions.get(sessionId);
   if (!session) {
@@ -199,14 +200,52 @@ const processMessage = async (
       throw notFoundDbError;
     }
 
+    // Prepare files for AI if attachments exist
+    let filesForAI = [];
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+      for (const att of attachments) {
+        try {
+          // Only allow files from uploads dir, sanitize filename
+          const uploadsDir = path.resolve(process.cwd(), "uploads");
+          const filePath = path.join(uploadsDir, path.basename(att.url));
+          // Read file as Buffer
+          const fileBuffer = await fs.readFile(filePath);
+          filesForAI.push({
+            name: att.originalName,
+            mimeType: att.mimeType,
+            buffer: fileBuffer,
+          });
+        } catch (err) {
+          logger.error({ err, att }, "Failed to load attachment for AI");
+        }
+      }
+    }
+
+    // Save user message (with attachments if any)
     chat.messages.push({
       role: "user",
       content: messageContent,
       timestamp: new Date(),
+      attachments:
+        Array.isArray(attachments) && attachments.length > 0 ? attachments : [],
+      status: "sent",
     });
     const messagesForAI = chat.messages
       .slice(-20)
       .map((msg) => ({ role: msg.role, content: msg.content }));
+
+    // Prepare ai-sdk files argument if any
+    let aiFilesArg = undefined;
+    if (filesForAI.length > 0) {
+      // ai-sdk expects: [{ name, mimeType, data }]
+      aiFilesArg = filesForAI.map((f) => ({
+        name: f.name,
+        mimeType: f.mimeType,
+        data: f.buffer,
+      }));
+    }
 
     const response = await generateText({
       model: google(GEMINI_MODEL_NAME),
@@ -214,6 +253,7 @@ const processMessage = async (
       maxSteps: 10,
       system: systemPromptText,
       messages: messagesForAI,
+      ...(aiFilesArg ? { files: aiFilesArg } : {}),
     });
 
     if (response.usage) {
