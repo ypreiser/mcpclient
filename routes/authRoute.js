@@ -2,30 +2,18 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose"; // For ObjectId validation
+import mongoose from "mongoose";
 import User from "../models/userModel.js";
 import logger from "../utils/logger.js";
 
 const router = express.Router();
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  if (process.env.NODE_ENV === "test") {
-    // In test environment, just log a warning
-    logger.warn("JWT_SECRET not set in test environment");
-  } else {
-    // In non-test environments, exit with error
-    logger.fatal(
-      "JWT_SECRET is not set. Application will not function securely."
-    );
-    process.exit(1);
-  }
-}
+// Removed top-level JWT_SECRET_KEY constant. Will access process.env.JWT_SECRET directly.
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
+  secure: process.env.NODE_ENV === "production" ? true : false, // Always false unless production
+  sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax", // Lax for test/dev
   maxAge: 1000 * 60 * 60 * 24, // 1 day
   path: "/",
 };
@@ -79,6 +67,18 @@ router.post("/login", async (req, res, next) => {
   const logMeta = { email: email?.toLowerCase(), ip };
 
   try {
+    const currentJwtSecret = process.env.JWT_SECRET; // Access directly
+    if (!currentJwtSecret) {
+      logger.fatal(
+        "CRITICAL: JWT_SECRET environment variable is not set for login operation."
+      );
+      // In a real app, you might not want to expose "Server configuration error" directly
+      // but for testing this helps identify the issue.
+      return res
+        .status(500)
+        .json({ error: "Server configuration error preventing login." });
+    }
+
     if (!email || !password) {
       logger.warn(
         { ...logMeta, success: false, reason: "Missing credentials" },
@@ -104,13 +104,9 @@ router.post("/login", async (req, res, next) => {
       );
       return res.status(401).json({ error: "Invalid email or password." });
     }
-    const token = jwt.sign(
-      { userId: user._id },
-      JWT_SECRET || "test-secret-key",
-      {
-        expiresIn: "1d",
-      }
-    );
+    const token = jwt.sign({ userId: user._id }, currentJwtSecret, {
+      expiresIn: "1d",
+    });
     res.cookie("token", token, COOKIE_OPTIONS);
     logger.info(
       { ...logMeta, success: true, userId: user._id },
@@ -118,7 +114,12 @@ router.post("/login", async (req, res, next) => {
     );
     res.status(200).json({
       message: "Login successful.",
-      user: { email: user.email, name: user.name, userId: user._id },
+      user: {
+        email: user.email,
+        name: user.name,
+        userId: user._id,
+        privilegeLevel: user.privlegeLevel,
+      },
     });
   } catch (err) {
     logger.error({ ...logMeta, success: false, err }, "Login attempt error");
@@ -127,19 +128,33 @@ router.post("/login", async (req, res, next) => {
 });
 
 router.post("/logout", (req, res) => {
-  // Set cookie options with maxAge: 0 for immediate expiry
   const clearOptions = {
     ...COOKIE_OPTIONS,
     maxAge: 0,
   };
   res.clearCookie("token", clearOptions);
-  logger.info({ userId: req.user?._id, ip: req.ip }, "User logged out.");
+  // Log userId if available, otherwise undefined (for test robustness)
+  logger.info(
+    { userId: req.user ? req.user._id : undefined, ip: req.ip },
+    "User logged out."
+  );
   res.status(200).json({ message: "Logged out successfully." });
 });
 
 export async function requireAuth(req, res, next) {
   const token = req.cookies?.token;
   const logMeta = { ip: req.ip, path: req.originalUrl, method: req.method };
+
+  const currentJwtSecret = process.env.JWT_SECRET; // Access directly
+  if (!currentJwtSecret) {
+    logger.error(
+      { ...logMeta },
+      "Auth failed: JWT_SECRET not configured on server for requireAuth."
+    );
+    return res
+      .status(500)
+      .json({ error: "Authentication system configuration error." });
+  }
 
   if (!token) {
     logger.warn({ ...logMeta }, "Auth failed: No token");
@@ -148,7 +163,7 @@ export async function requireAuth(req, res, next) {
       .json({ error: "Authentication required. No token provided." });
   }
   try {
-    const decoded = jwt.verify(token, JWT_SECRET || "test-secret-key");
+    const decoded = jwt.verify(token, currentJwtSecret);
     const userId = decoded.userId;
 
     if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
@@ -188,11 +203,14 @@ export async function requireAuth(req, res, next) {
   }
 }
 
+// Express-compatible middleware wrapper for async requireAuth
+export function requireAuthMiddleware(req, res, next) {
+  Promise.resolve(requireAuth(req, res, next)).catch(next);
+}
+
 router.get("/me", requireAuth, async (req, res, next) => {
   try {
-    // req.user is populated by requireAuth and is fresh enough for basic details.
-    // For token usage, which might update frequently, re-fetching ensures latest data.
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).select("-password");
 
     if (!user) {
       logger.warn(
@@ -201,12 +219,11 @@ router.get("/me", requireAuth, async (req, res, next) => {
       );
       return res.status(404).json({ error: "User not found." });
     }
-    // Convert Map to a plain object for JSON response, if necessary, or ensure client handles Map.
-    // Mongoose Maps usually serialize to objects fine.
+
     const monthlyUsageObject = {};
     if (user.monthlyTokenUsageHistory) {
       for (const [key, value] of user.monthlyTokenUsageHistory) {
-        monthlyUsageObject[key] = value.toObject ? value.toObject() : value; // Ensure sub-docs are plain objects
+        monthlyUsageObject[key] = value.toObject ? value.toObject() : value;
       }
     }
 
@@ -223,11 +240,10 @@ router.get("/me", requireAuth, async (req, res, next) => {
             completionTokens: user.totalLifetimeCompletionTokens,
             totalTokens: user.totalLifetimeTokens,
           },
-          monthlyHistory: monthlyUsageObject, // Send the converted object
+          monthlyHistory: monthlyUsageObject,
           quota: {
             allowedPerMonth: user.quotaTokensAllowedPerMonth,
             currentMonthStartDate: user.quotaMonthStartDate,
-            // You might calculate current month's usage here if not relying on monthlyTokenUsageHistory["CURRENT_YYYY-MM"]
           },
           lastUsageUpdate: user.lastTokenUsageUpdate,
         },

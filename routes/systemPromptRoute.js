@@ -12,6 +12,7 @@ router.get("/", async (req, res, next) => {
       "name",
       "_id",
       "isActive",
+      "userId", // <-- Add userId so tests can match
     ]);
     res.json(prompts);
   } catch (error) {

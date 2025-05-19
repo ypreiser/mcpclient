@@ -6,154 +6,9 @@ import { logTokenUsage } from "./tokenUsageService.js";
 // SystemPrompt model is not directly used in this snippet, keeping for context
 // import SystemPrompt from "../models/systemPromptModel.js";
 import logger from "../utils/logger.js";
-import { isUrl } from "./chatUtils.js";
+import { isUrl, normalizeDbMessageContentForAI } from "./chatUtils.js"; // UPDATED IMPORT
 import { sessions } from "./sessionService.js";
-import { URL } from "url"; // Import URL for validation
-
-// Helper to normalize message content from DB for the AI SDK
-function normalizeDbMessageContentForAI(dbMessage) {
-  // Ensure dbMessage and dbMessage.content exist
-  if (
-    !dbMessage ||
-    typeof dbMessage.content === "undefined" ||
-    dbMessage.content === null
-  ) {
-    logger.warn(
-      { messageId: dbMessage?._id?.toString() },
-      "Historical message content is missing or null. Sending placeholder."
-    );
-    return [{ type: "text", text: "[System: Message content unavailable]" }];
-  }
-
-  // Case 1: dbMessage.content is already an array (multi-modal or structured text from new messages)
-  if (Array.isArray(dbMessage.content)) {
-    const validParts = dbMessage.content.reduce((acc, part) => {
-      // Basic validation for part structure
-      if (!part || typeof part.type !== "string") {
-        logger.warn(
-          { part, messageId: dbMessage._id?.toString() },
-          "Invalid part structure in historical array message content, skipping."
-        );
-        return acc;
-      }
-
-      if (part.type === "text") {
-        if (typeof part.text === "string" && part.text.trim() !== "") {
-          acc.push({ type: "text", text: part.text });
-        } else {
-          logger.info(
-            { part, messageId: dbMessage._id?.toString() },
-            "Empty or invalid text part in historical array message content, skipping."
-          );
-        }
-      } else if (part.type === "image") {
-        if (
-          typeof part.image === "string" &&
-          part.image.trim() !== "" &&
-          typeof part.mimeType === "string"
-        ) {
-          try {
-            new URL(part.image); // Validate URL
-            acc.push({
-              type: "image",
-              image: part.image,
-              mimeType: part.mimeType,
-            });
-          } catch (e) {
-            logger.warn(
-              { part, messageId: dbMessage._id?.toString(), error: e.message },
-              "Invalid image URL in historical array message content part, skipping."
-            );
-          }
-        } else {
-          logger.warn(
-            { part, messageId: dbMessage._id?.toString() },
-            "Malformed image part (non-string image, empty image URL, or missing mimeType) in historical array message content, skipping."
-          );
-        }
-      } else if (part.type === "file") {
-        // Assuming 'file' parts are structured like { type: "file", data: "URL", mimeType: "...", filename: "..." }
-        if (
-          typeof part.data === "string" &&
-          part.data.trim() !== "" &&
-          typeof part.mimeType === "string" &&
-          typeof part.filename === "string"
-        ) {
-          try {
-            new URL(part.data); // Validate URL for file data
-            acc.push({
-              type: "file",
-              data: part.data,
-              mimeType: part.mimeType,
-              filename: part.filename,
-            });
-          } catch (e) {
-            logger.warn(
-              { part, messageId: dbMessage._id?.toString(), error: e.message },
-              "Invalid file data URL in historical array message content part, skipping."
-            );
-          }
-        } else {
-          logger.warn(
-            { part, messageId: dbMessage._id?.toString() },
-            "Malformed file part in historical array message content, skipping."
-          );
-        }
-      } else {
-        // Log and skip unknown part types if any were stored
-        logger.warn(
-          { part, messageId: dbMessage._id?.toString() },
-          "Unknown part type in historical array message content, skipping."
-        );
-      }
-      return acc;
-    }, []);
-
-    if (validParts.length === 0) {
-      logger.warn(
-        {
-          messageId: dbMessage._id?.toString(),
-          originalContent: dbMessage.content,
-        },
-        "Historical array message content resulted in no valid parts after normalization. Sending placeholder."
-      );
-      return [
-        {
-          type: "text",
-          text: "[System: Message content unprocessable or empty after normalization]",
-        },
-      ];
-    }
-    return validParts;
-  }
-
-  // Case 2: dbMessage.content is a string (e.g. simple text message, or assistant response)
-  if (typeof dbMessage.content === "string") {
-    const trimmedContent = dbMessage.content.trim();
-    if (trimmedContent === "") {
-      logger.info(
-        { messageId: dbMessage._id?.toString() },
-        "Historical string message content is empty. Sending placeholder."
-      );
-      // It's important that even for "empty" messages, the AI gets a validly structured part.
-      return [{ type: "text", text: "[System: Message content empty]" }];
-    }
-    return [{ type: "text", text: trimmedContent }];
-  }
-
-  // Fallback: dbMessage.content is of an unexpected type (e.g. number, boolean)
-  logger.warn(
-    {
-      messageId: dbMessage._id?.toString(),
-      contentType: typeof dbMessage.content,
-      content: dbMessage.content,
-    },
-    "Unexpected historical message content type. Sending placeholder."
-  );
-  return [
-    { type: "text", text: "[System: Message content in unexpected format]" },
-  ];
-}
+// URL is now imported in chatUtils.js for normalizeDbMessageContentForAI
 
 const processMessage = async (
   sessionId,
@@ -320,8 +175,6 @@ const processMessage = async (
 
     logger.info(
       {
-        // To avoid excessively large logs, consider logging only a summary or message count
-        // messagesForAI: messagesForAI, // This can be very verbose
         messageCountForAI: messagesForAI.length,
         model: GEMINI_MODEL_NAME,
         system: systemPromptText ? "Present" : "Absent",
@@ -333,8 +186,8 @@ const processMessage = async (
     const aiResponse = await generateText({
       model: google(GEMINI_MODEL_NAME),
       tools,
-      system: systemPromptText, // System prompt text itself
-      messages: messagesForAI, // The array of message objects
+      system: systemPromptText,
+      messages: messagesForAI,
     });
 
     if (aiResponse.usage) {
@@ -372,17 +225,13 @@ const processMessage = async (
       );
     }
 
-    // For assistant responses, content is typically text.
-    // If your AI can respond with multi-modal content, this needs adjustment.
     const assistantResponseText =
       aiResponse.text ?? "No text response from AI.";
     chat.messages.push({
       role: "assistant",
-      content: assistantResponseText, // Store as string; normalizeDbMessageContentForAI will handle it on next turn
+      content: assistantResponseText,
       timestamp: new Date(),
       status: "sent",
-      // Assistant messages usually don't have 'attachments' in the same way user messages do.
-      // If the assistant refers to or generates files, that's part of its 'content' or 'toolCalls'.
     });
     chat.updatedAt = new Date();
     await chat.save();
@@ -393,39 +242,29 @@ const processMessage = async (
       usage: aiResponse.usage,
     };
   } catch (error) {
-    // Log the error with more context, including the messagesForAI if small enough or if in dev
     const errorContext = {
       err: {
         message: error.message,
         stack: error.stack,
         status: error.status,
-        // Include AI SDK specific details if available and error is from AI SDK
         ...(error.cause && { cause: error.cause }),
-        ...(error.type && { type: error.type }), // e.g. 'InvalidPromptError'
+        ...(error.type && { type: error.type }),
       },
       sessionId,
       userId: userIdForTokenBilling,
       source: "webapp",
     };
-    // In development, it can be helpful to log the exact payload that caused the error
-    if (
-      process.env.NODE_ENV === "development" &&
-      error.type === "InvalidPromptError"
-    ) {
-      // errorContext.messagesSentToAI = messagesForAI; // Be cautious with logging potentially large/sensitive data
-    }
 
     logger.error(
       errorContext,
       `ChatService: Error processing webapp message: ${error.message}`
     );
 
-    // Re-throw error with status if it's a known/custom error, otherwise a generic 500
     if (error.status) throw error;
     const serviceError = new Error(
       "An internal error occurred while processing your message."
     );
-    serviceError.status = 500; // Internal Server Error
+    serviceError.status = 500;
     throw serviceError;
   }
 };

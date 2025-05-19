@@ -14,7 +14,7 @@ import logger from "../utils/logger.js";
  * @param {string} params.modelName
  * @param {number} params.promptTokens
  * @param {number} params.completionTokens
- * @param {string} params.sessionId
+ * @param {string} params.sessionId - For webapp, this is the app-generated session ID. For WhatsApp, this can be the userNumber (passed from whatsappMessageProcessor).
  * @param {string} params.source
  */
 export async function logTokenUsage({
@@ -42,6 +42,7 @@ export async function logTokenUsage({
     timestamp: new Date(),
   });
   await usageRecord.save();
+
   await User.logTokenUsage({
     userId: userIdForTokenBilling,
     promptTokens,
@@ -52,15 +53,19 @@ export async function logTokenUsage({
     promptTokens,
     completionTokens,
   });
+
   logger.info(
     {
       userId: userIdForTokenBilling,
+      systemPromptId,
+      chatId,
       promptTokens,
       completionTokens,
       totalTokens,
       source,
-      sessionId,
+      sessionId, // Logged for context (e.g. webapp UUID or WA user number)
+      modelName,
     },
-    "Token usage logged for webapp chat."
+    `Token usage logged for ${source} chat.`
   );
 }

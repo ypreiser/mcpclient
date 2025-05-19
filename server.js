@@ -14,7 +14,7 @@ import publicChatRoutes from "./routes/publicChatRoute.js";
 import adminRoutes from "./routes/adminRoute.js";
 import chatRoutes from "./routes/chatRoute.js";
 import { body, validationResult } from "express-validator";
-import upload from "./utils/uploadMiddleware.js"; // Corrected path
+import uploadRoute from "./routes/uploadRoute.js";
 import fs from "fs";
 import path from "path";
 
@@ -129,7 +129,7 @@ app.use((req, res, next) => {
     "/api/auth/register",
     "/health",
   ];
-  // Allow all /chat/* public endpoints (publicChatRoute)
+  // Allow all /chat/* public endpoints (publicChatRoute) and OPTIONS for /api/auth/
   if (
     openPaths.includes(req.path) ||
     req.path.startsWith("/chat/") || // Public chat routes
@@ -156,18 +156,6 @@ const setCookieSecurely = (res, name, value, options = {}) => {
   };
   res.cookie(name, value, { ...defaultOptions, ...options });
 };
-// Example of applying it if authRoute directly manipulates cookies
-// app.use('/api/auth', (req, res, next) => {
-//   const originalCookie = res.cookie;
-//   res.cookie = (name, value, options) => {
-//     setCookieSecurely(res, name, value, options);
-//     // originalCookie.call(res, name, value, mergedOptions); // This line is problematic
-//   };
-//   next();
-// });
-// This overriding approach for res.cookie is generally fragile.
-// It's better to call `setCookieSecurely` explicitly where cookies are set.
-// However, your authRoute.js already sets cookie options, which is good.
 
 // Sample of how to use validation middleware
 app.post(
@@ -182,88 +170,14 @@ app.post(
   }
 );
 
-// File upload endpoint (authenticated)
-app.post("/api/upload", upload.single("file"), (req, res, next) => {
-  try {
-    if (!req.file) {
-      logger.warn({ userId: req.user?._id }, "Upload attempt with no file.");
-      return res.status(400).json({ error: "No file uploaded." });
-    }
-    // Security: `uploadMiddleware` handles file type and size checks.
-    // `req.file.path` from multer-storage-cloudinary is the URL to the file.
-    const fileMeta = {
-      url: req.file.path, // Cloudinary URL
-      originalName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      uploadedAt: new Date(),
-      // Consider adding `public_id: req.file.filename` if using `CloudinaryStorage`'s `filename` mapping to `public_id`
-      // For the default `multer-storage-cloudinary`, `req.file.filename` might be the `public_id`.
-    };
-    logger.info({ file: fileMeta }, "File uploaded successfully");
-    res.status(201).json({ file: fileMeta });
-  } catch (error) {
-    // Multer errors (e.g., file too large, invalid type from fileFilter) might be caught here
-    logger.error({ err: error }, "Error during file upload processing");
-    if (error.message.includes("Invalid file type")) {
-      return res.status(400).json({ error: error.message });
-    }
-    if (error instanceof multer.MulterError) {
-      return res
-        .status(400)
-        .json({ error: `File upload error: ${error.message}` });
-    }
-    next(error); // Pass to global error handler
-  }
-});
-
-// Serve uploaded files securely (with auth)
-// Note: This serves files from local 'uploads' folder.
-// If using Cloudinary, files are served directly from Cloudinary URLs, not this endpoint.
-// This endpoint might be for a different (local) upload mechanism or can be removed if all uploads go to Cloudinary.
-app.get("/uploads/:filename", requireAuth, (req, res) => {
-  const filename = path.basename(req.params.filename); // Sanitize filename
-  const filePath = path.join(process.cwd(), "uploads", filename);
-
-  // Security: Check if the resolved path is still within the 'uploads' directory
-  // This is a basic check. More robust path traversal prevention might be needed if subdirectories are allowed.
-  if (!filePath.startsWith(path.join(process.cwd(), "uploads"))) {
-    logger.warn(
-      `Potential path traversal attempt: ${req.params.filename} by user ${req.user?._id}`
-    );
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: "File not found." });
-  }
-  // Optionally: Check user permissions here to see if req.user is allowed to access this specific file.
-  // e.g., if files are associated with user IDs.
-
-  // Set appropriate Content-Type header
-  // res.contentType(path.extname(filename)); // Basic, might need a mapping for more accuracy
-
-  res.sendFile(filePath, (err) => {
-    if (err) {
-      logger.error(
-        { err, filePath, userId: req.user?._id },
-        "Error sending file"
-      );
-      // Avoid sending detailed error messages to client from res.sendFile internal errors
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Error serving file." });
-      }
-    }
-  });
-});
-
 // Register routes
-app.use("/api/auth", authRoutes); // authRoutes will use its own cookie setting logic
-app.use("/api/systemprompt", requireAuth, systemPromptRoutes); // Protected
-app.use("/api/whatsapp", requireAuth, whatsappRoutes); // Protected
-app.use("/chat", publicChatRoutes); // Public, handles its own auth/validation if needed internally
-app.use("/api/admin", requireAuth, adminRoutes); // Protected
-app.use("/api/chats", requireAuth, chatRoutes); // Protected
+app.use("/api/auth", authRoutes);
+app.use("/api/systemprompt", requireAuth, systemPromptRoutes);
+app.use("/api/whatsapp", requireAuth, whatsappRoutes);
+app.use("/chat", publicChatRoutes);
+app.use("/api/admin", requireAuth, adminRoutes);
+app.use("/api/chats", requireAuth, chatRoutes);
+app.use("/api/upload", uploadRoute); // This line was missing the requireAuth, but uploadRoute handles its own auth logic (or lack thereof if public)
 
 // Add utility functions to app.locals
 app.locals.uuidv4 = uuidv4;
@@ -285,11 +199,11 @@ class ApiError extends Error {
 // Global error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  const statusCode = err.statusCode || err.status || 500; // err.status for some libraries like multer
+  const statusCode = err.statusCode || err.status || 500;
   let message = err.message || "Internal Server Error";
 
-  // Sanitize multer error messages for client
   if (err instanceof multer.MulterError) {
+    // Ensure multer is imported if using this directly
     message = `File upload error: ${err.field ? err.field + " " : ""}${
       err.code
     }`;
@@ -297,19 +211,18 @@ app.use((err, req, res, next) => {
     ![400, 401, 403, 404, 409, 429].includes(statusCode) &&
     process.env.NODE_ENV === "production"
   ) {
-    // For 5xx errors in production, don't leak detailed error messages
     message = "An unexpected error occurred. Please try again later.";
   }
 
   logger.error(
     {
-      err, // Full error object for server logs
+      err,
       path: req.path,
       method: req.method,
       body: req.body?.password
         ? { ...req.body, password: "MASKEDPASSWORD" }
-        : req.body, // Mask password
-      userId: req.user?._id, // Log user if available
+        : req.body,
+      userId: req.user?._id,
     },
     `Global error handler caught: ${err.message}`
   );
@@ -317,13 +230,11 @@ app.use((err, req, res, next) => {
   res.status(statusCode).json({
     error: {
       message,
-      // Only include stack trace in development
       stack:
         process.env.NODE_ENV === "development" || process.env.NODE_ENV === "dev"
           ? err.stack
           : undefined,
-      // Include error code or name if useful and safe
-      code: err.code && typeof err.code === "string" ? err.code : undefined, // e.g., Multer error codes
+      code: err.code && typeof err.code === "string" ? err.code : undefined,
     },
   });
 });
@@ -332,7 +243,6 @@ app.use((err, req, res, next) => {
 const gracefulShutdown = async (signal, serverInstance) => {
   logger.info(`${signal} received. Closing connections...`);
   try {
-    // Close server first to stop accepting new connections
     if (serverInstance) {
       await new Promise((resolve, reject) => {
         serverInstance.close((err) => {
@@ -346,29 +256,26 @@ const gracefulShutdown = async (signal, serverInstance) => {
       });
     }
 
-    // Close database connection
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
       logger.info("MongoDB connection closed.");
     }
 
-    // Add any other cleanup here (e.g., closing AI clients if globally managed, WhatsApp service)
-    if (
-      global.whatsappServiceInstance &&
-      typeof global.whatsappServiceInstance.gracefulShutdown === "function"
-    ) {
+    // Ensure whatsappServiceInstance is correctly referenced or imported if not global
+    // Assuming it's made available globally or imported by the main starting script
+    const waService = global.whatsappServiceInstance; // Or direct import if modularized
+    if (waService && typeof waService.gracefulShutdown === "function") {
       logger.info("Attempting graceful shutdown of WhatsApp service...");
-      await global.whatsappServiceInstance.gracefulShutdown();
+      await waService.gracefulShutdown();
     }
   } catch (err) {
     logger.error({ err }, "Error during graceful shutdown:");
   } finally {
     logger.info("Exiting process");
-    process.exit(0); // Exit after attempting cleanup
+    process.exit(0);
   }
 };
 
-// Export everything needed for the starter
 export {
   app,
   initializeMongoDB,

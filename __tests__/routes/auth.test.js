@@ -1,5 +1,13 @@
 //mcpclient/__tests__/routes/auth.test.js
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import request from "supertest";
 import mongoose from "mongoose";
 import express from "express";
@@ -10,61 +18,80 @@ import helmet from "helmet";
 import logger from "../../utils/logger.js"; // mocked
 
 import authRoutes, { requireAuth } from "../../routes/authRoute.js";
+import User from "../../models/userModel.js"; // Import User model
 
-// Minimal app setup for testing auth routes specifically
 let app;
-let server; // To hold the http.Server instance for proper closing
+// No global agent needed here as tests create their own or use direct requests.
+
+// To store emails of users created during tests for cleanup
+const createdUserEmails = new Set();
 
 const initializeTestApp = () => {
-  dotenv.config(); // Load .env variables
   const testApp = express();
   testApp.use(helmet());
   testApp.use(cors({ origin: "http://localhost:5173", credentials: true }));
   testApp.use(express.json());
   testApp.use(cookieParser());
 
-  // Mock the global error handler or use a simplified one for tests
-  // eslint-disable-next-line no-unused-vars
-  testApp.use((err, req, res, next) => {
-    logger.error({ err }, "Test unhandled error"); // Use the mocked logger
-    res.status(err.status || 500).json({
-      error: { message: err.message || "Internal Server Error" },
-    });
-  });
-
   testApp.use("/api/auth", authRoutes);
-  // Dummy protected route for testing requireAuth
   testApp.get("/api/protected", requireAuth, (req, res) =>
-    res.json({ message: "accessed", userId: req.user._id })
+    res.json({
+      message: "accessed",
+      userId: req.user._id,
+      email: req.user.email,
+    })
   );
 
+  testApp.use((err, req, res, next) => {
+    logger.error(
+      { err, path: req.path, method: req.method, body: req.body },
+      "Test unhandled error in auth.test.js"
+    );
+    const status = err.status || err.statusCode || 500;
+    res.status(status).json({
+      error: { message: err.message || "Internal Server Error" },
+      ...(process.env.NODE_ENV !== "production" && { stack: err.stack }),
+    });
+  });
   return testApp;
 };
 
 describe("Auth Routes API", () => {
   beforeAll(async () => {
-    // Set up test environment
-    process.env.NODE_ENV = "test";
-    process.env.JWT_SECRET = "test-secret-key";
-
-    app = initializeTestApp(); // Initialize the app instance for this test suite
+    app = initializeTestApp();
   });
 
   afterAll(async () => {
-    // if (server) {
-    //   server.close();
-    // }
+    // Clean up all users created during these tests
+    if (createdUserEmails.size > 0) {
+      try {
+        await User.deleteMany({
+          email: { $in: Array.from(createdUserEmails) },
+        });
+        createdUserEmails.clear();
+      } catch (error) {
+        console.error("Error cleaning up users in auth.test.js:", error);
+      }
+    }
   });
 
-  const userData = {
-    email: "test@example.com",
-    password: "password123",
-    name: "Test User",
+  const getUserData = () => {
+    const email = `test-${Date.now()}@example.com`;
+    // Store email for cleanup
+    // createdUserEmails.add(email); // Handled by direct creation tracking below
+    return {
+      email: email,
+      password: "password123",
+      name: "Test User",
+    };
   };
 
   describe("POST /api/auth/register", () => {
     it("should register a new user successfully", async () => {
-      const res = await request(app).post("/api/auth/register").send(userData);
+      const currentUserData = getUserData();
+      const res = await request(app)
+        .post("/api/auth/register")
+        .send(currentUserData);
       expect(res.statusCode).toBe(201);
       expect(res.body).toHaveProperty(
         "message",
@@ -72,14 +99,22 @@ describe("Auth Routes API", () => {
       );
       expect(res.body).toHaveProperty("userId");
       expect(logger.info).toHaveBeenCalledWith(
-        expect.objectContaining({ email: userData.email }),
+        expect.objectContaining({ email: currentUserData.email }),
         "User registered successfully"
       );
+      createdUserEmails.add(currentUserData.email); // Track for cleanup
     });
 
     it("should fail to register if email already exists", async () => {
-      await request(app).post("/api/auth/register").send(userData); // First registration
-      const res = await request(app).post("/api/auth/register").send(userData); // Attempt second
+      const currentUserData = getUserData();
+      // First registration
+      await request(app).post("/api/auth/register").send(currentUserData);
+      createdUserEmails.add(currentUserData.email); // Track for cleanup
+
+      // Attempt to register again
+      const res = await request(app)
+        .post("/api/auth/register")
+        .send(currentUserData);
       expect(res.statusCode).toBe(409);
       expect(res.body).toHaveProperty("error", "Email already registered.");
     });
@@ -97,59 +132,73 @@ describe("Auth Routes API", () => {
   });
 
   describe("POST /api/auth/login", () => {
+    let localUserData;
+    let localAgent;
+
     beforeEach(async () => {
-      // Ensure user is registered before each login test
-      await request(app).post("/api/auth/register").send(userData);
+      localUserData = getUserData();
+      localAgent = request.agent(app);
+      // Register user directly
+      await request(app).post("/api/auth/register").send(localUserData);
+      createdUserEmails.add(localUserData.email); // Track for cleanup
     });
 
+    // afterEach already handled by afterAll for this structure
+
     it("should login an existing user successfully and set cookie", async () => {
-      const res = await request(app)
+      const res = await localAgent
         .post("/api/auth/login")
-        .send({ email: userData.email, password: userData.password });
+        .send({ email: localUserData.email, password: localUserData.password });
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("message", "Login successful.");
-      expect(res.body.user).toHaveProperty("email", userData.email);
+      expect(res.body.user).toHaveProperty("email", localUserData.email);
       expect(res.headers["set-cookie"]).toBeDefined();
       expect(res.headers["set-cookie"][0]).toContain("token=");
       expect(logger.info).toHaveBeenCalledWith(
-        expect.objectContaining({ email: userData.email, success: true }),
+        expect.objectContaining({ email: localUserData.email, success: true }),
         "Login successful"
       );
     });
 
     it("should fail to login with incorrect password", async () => {
-      const res = await request(app)
+      const res = await localAgent
         .post("/api/auth/login")
-        .send({ email: userData.email, password: "wrongpassword" });
+        .send({ email: localUserData.email, password: "wrongpassword" });
       expect(res.statusCode).toBe(401);
       expect(res.body).toHaveProperty("error", "Invalid email or password.");
     });
   });
 
   describe("GET /api/protected (testing requireAuth)", () => {
+    let protectedRouteAgent;
+    let protectedUserData;
+
     beforeEach(async () => {
-      await request(app).post("/api/auth/register").send(userData);
+      protectedUserData = getUserData();
+      protectedRouteAgent = request.agent(app);
+      await protectedRouteAgent
+        .post("/api/auth/register")
+        .send(protectedUserData);
+      createdUserEmails.add(protectedUserData.email); // Track for cleanup
+
+      const loginRes = await protectedRouteAgent
+        .post("/api/auth/login")
+        .send(protectedUserData);
+      expect(loginRes.statusCode).toBe(200);
     });
 
-    it("should allow access with a valid token cookie", async () => {
-      const loginRes = await request(app)
-        .post("/api/auth/login")
-        .send({ email: userData.email, password: userData.password });
-
-      const tokenCookie = loginRes.headers["set-cookie"][0];
-
-      const protectedRes = await request(app)
-        .get("/api/protected")
-        .set("Cookie", tokenCookie); // Send cookie with the request
-
+    it("should allow access with a valid token cookie (via agent)", async () => {
+      const protectedRes = await protectedRouteAgent.get("/api/protected");
       expect(protectedRes.statusCode).toBe(200);
       expect(protectedRes.body).toHaveProperty("message", "accessed");
       expect(protectedRes.body).toHaveProperty("userId");
+      expect(protectedRes.body.email).toBe(protectedUserData.email);
     });
 
-    it("should deny access without a token cookie", async () => {
-      const res = await request(app).get("/api/protected");
+    it("should deny access without a token cookie (new agent)", async () => {
+      const newAgentWithoutLogin = request.agent(app);
+      const res = await newAgentWithoutLogin.get("/api/protected");
       expect(res.statusCode).toBe(401);
       expect(res.body).toHaveProperty(
         "error",
@@ -159,31 +208,44 @@ describe("Auth Routes API", () => {
   });
 
   describe("POST /api/auth/logout", () => {
-    it("should logout the user and clear the cookie", async () => {
-      // First, register and login to get a cookie
-      await request(app).post("/api/auth/register").send(userData);
-      const loginRes = await request(app)
-        .post("/api/auth/login")
-        .send({ email: userData.email, password: userData.password });
-      const tokenCookie = loginRes.headers["set-cookie"][0];
+    let logoutAgent;
+    let logoutUserData;
 
-      const logoutRes = await request(app)
-        .post("/api/auth/logout")
-        .set("Cookie", tokenCookie); // Send original cookie to ensure it's processed if needed by logout logic
+    beforeEach(async () => {
+      logoutUserData = getUserData();
+      logoutAgent = request.agent(app);
+      await logoutAgent.post("/api/auth/register").send(logoutUserData);
+      createdUserEmails.add(logoutUserData.email); // Track for cleanup
+
+      const loginRes = await logoutAgent
+        .post("/api/auth/login")
+        .send(logoutUserData);
+      expect(loginRes.statusCode).toBe(200);
+    });
+
+    it("should logout the user and clear the cookie", async () => {
+      const logoutRes = await logoutAgent.post("/api/auth/logout");
 
       expect(logoutRes.statusCode).toBe(200);
       expect(logoutRes.body).toHaveProperty(
         "message",
         "Logged out successfully."
       );
-      // Check if the cookie is cleared      // Check if cookie is cleared (either by Max-Age=0 or Expires in the past)
       const cookie = logoutRes.headers["set-cookie"][0];
       expect(cookie).toContain("token=;");
       expect(cookie).toMatch(/(?:Max-Age=0|Expires=Thu, 01 Jan 1970)/);
       expect(logger.info).toHaveBeenCalledWith(
-        expect.anything(),
+        expect.objectContaining({
+          userId: expect.toSatisfy(
+            (v) => typeof v === "string" || v === undefined
+          ),
+          ip: expect.anything(),
+        }),
         "User logged out."
-      ); // User ID might be undefined if cookie is cleared before log
+      );
+
+      const protectedRes = await logoutAgent.get("/api/protected");
+      expect(protectedRes.statusCode).toBe(401);
     });
   });
 });
