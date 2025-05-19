@@ -1,3 +1,4 @@
+//mcpclient/utils/whatsappClientManager.js
 import pkg from "whatsapp-web.js";
 import { MongoStore } from "wwebjs-mongo";
 import mongoose from "mongoose";

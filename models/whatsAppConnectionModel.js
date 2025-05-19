@@ -1,3 +1,4 @@
+//mcpclient/models/whatsAppConnectionModel.js
 import mongoose from "mongoose";
 
 const whatsAppConnectionSchema = new mongoose.Schema(

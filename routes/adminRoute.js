@@ -1,3 +1,4 @@
+//mcpclient/routes/adminRoute.js
 import User from "../models/userModel.js";
 import SystemPrompt from "../models/systemPromptModel.js";
 import express from "express";

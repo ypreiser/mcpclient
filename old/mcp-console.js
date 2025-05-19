@@ -1,3 +1,4 @@
+//mcpclient/old/mcp-console.js
 import { experimental_createMCPClient, generateText } from "ai";
 import { Experimental_StdioMCPTransport } from "ai/mcp-stdio";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";

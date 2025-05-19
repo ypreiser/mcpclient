@@ -1,3 +1,4 @@
+//mcpclient/utils/whatsappEventHandler.js
 import logger from "../utils/logger.js";
 import connectionPersistence from "./whatsappConnectionPersistence.js";
 // WhatsAppMessageProcessor will be instantiated and passed by WhatsAppService

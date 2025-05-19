@@ -1,10 +1,13 @@
+//mcpclient/utils/json2llm.js
 export function fieldToText(key, value) {
   if (
     value === undefined ||
     value === null ||
     value === "" ||
     (Array.isArray(value) && value.length === 0) ||
-    (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
+    (typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 0)
   ) {
     return "";
   }
@@ -36,7 +39,8 @@ export function fieldToText(key, value) {
   if (
     Array.isArray(value) &&
     value.length > 0 &&
-    typeof value[0] === "object" && value[0] !== null
+    typeof value[0] === "object" &&
+    value[0] !== null
   ) {
     let text = `${fieldNames[key] || key}:\n`;
     value.forEach((item, idx) => {
@@ -80,7 +84,14 @@ export function systemPromptToNaturalLanguage(promptDoc) {
 
   for (const [key, value] of Object.entries(prompt)) {
     // Exclude internal fields and mcpServers from the AI-facing prompt text
-    if (key === "name" || key === "_id" || key === "__v" || key === "updatedAt" || key === "mcpServers") continue;
+    if (
+      key === "name" ||
+      key === "_id" ||
+      key === "__v" ||
+      key === "updatedAt" ||
+      key === "mcpServers"
+    )
+      continue;
     text += fieldToText(key, value);
   }
   return text.trim();

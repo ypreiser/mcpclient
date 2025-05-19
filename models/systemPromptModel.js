@@ -1,3 +1,4 @@
+//mcpclient/models/systemPromptModel.js
 import mongoose from "mongoose";
 
 const McpServerSchema = new mongoose.Schema(

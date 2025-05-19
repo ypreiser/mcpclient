@@ -1,7 +1,11 @@
+//mcpclient/utils/logger.js
+import fs from "fs";
+fs.writeFileSync("full.log", "test");
 import pino from "pino";
+import path from "path";
 
 const logLevel = process.env.LOG_LEVEL || "info";
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = process.env.NODE_ENV === "production";
 
 const loggerOptions = {
   level: logLevel,
@@ -21,6 +25,36 @@ if (!isProduction) {
   };
 }
 // In production (isProduction is true), the default Pino output (JSON to stdout/stderr) is used.
+
+// Always log to a file in addition to console
+const logFilePath = path.join(process.cwd(), "full.log");
+
+if (!loggerOptions.transport) {
+  loggerOptions.transport = {};
+}
+loggerOptions.transport.targets = [
+  // Console (pretty in dev, raw in prod)
+  loggerOptions.transport?.target
+    ? {
+        target: loggerOptions.transport.target,
+        options: loggerOptions.transport.options,
+        level: logLevel,
+      }
+    : {
+        target: "pino/file",
+        options: { destination: 1 }, // stdout
+        level: logLevel,
+      },
+  // File
+  {
+    target: "pino/file",
+    options: { destination: logFilePath, mkdir: true },
+    level: logLevel,
+  },
+];
+
+delete loggerOptions.transport.target;
+delete loggerOptions.transport.options;
 
 const logger = pino(loggerOptions);
 

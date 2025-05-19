@@ -1,4 +1,4 @@
-// __tests__/setup/setup.js
+//mcpclient/__tests__/setup/setup.js
 process.env.NODE_ENV = "test"; // Set this first before any imports
 
 import { beforeAll, afterAll, afterEach, vi } from "vitest";

@@ -1,4 +1,4 @@
-// __tests__/routes/auth.test.js
+//mcpclient/__tests__/routes/auth.test.js
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
 import mongoose from "mongoose";
