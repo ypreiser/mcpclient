@@ -28,6 +28,25 @@ export async function logTokenUsage({
   sessionId,
   source = "webapp",
 }) {
+  // Validate token counts before proceeding
+  if (
+    typeof promptTokens !== "number" ||
+    isNaN(promptTokens) ||
+    typeof completionTokens !== "number" ||
+    isNaN(completionTokens)
+  ) {
+    logger.error(
+      {
+        userId: userIdForTokenBilling,
+        promptTokens,
+        completionTokens,
+        sessionId,
+        source,
+      },
+      "TokenUsageService: Invalid promptTokens or completionTokens (NaN or not a number). Skipping token usage record."
+    );
+    return; // Do not attempt to save invalid record
+  }
   const totalTokens = promptTokens + completionTokens;
   const usageRecord = new TokenUsageRecord({
     userId: userIdForTokenBilling,
