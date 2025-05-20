@@ -1,6 +1,10 @@
 //mcpclient/utils/logger.js
 import fs from "fs";
-fs.writeFileSync("full.log", "test");
+let now = new Date();
+let logFileName = `logs/${now.getFullYear()}-${
+  now.getMonth() + 1
+}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}-${now.getSeconds()}.log`;
+fs.writeFileSync(logFileName, `log file created at ${now.toISOString()}\n`);
 import pino from "pino";
 import path from "path";
 
