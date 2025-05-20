@@ -10,10 +10,6 @@ const router = express.Router();
 
 // Get all WhatsApp connections for the authenticated user
 router.get("/connections", requireAuth, async (req, res, next) => {
-  logger.info(
-    { userId: req.user._id },
-    "API: Fetching all WhatsApp connections"
-  );
   try {
     const userId = req.user._id;
     const connections = await WhatsAppConnection.find({ userId })

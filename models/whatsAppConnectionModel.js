@@ -25,7 +25,7 @@ const whatsAppConnectionSchema = new mongoose.Schema(
     },
     lastKnownStatus: {
       type: String,
-      default: "unknown", // e.g., 'initializing', 'qr_ready', 'connected', 'authenticated', 'auth_failed', 'disconnected_permanent', 'closed_manual', 'qr_pending_scan'
+      default: "unknown", // e.g., 'initializing', 'qr_ready', 'connected', 'authenticated', 'auth_failed', 'disconnected_permanent', 'closed_manually', 'qr_pending_scan'
     },
     lastConnectedAt: {
       type: Date,
