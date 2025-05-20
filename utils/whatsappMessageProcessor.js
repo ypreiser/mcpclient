@@ -4,10 +4,53 @@ import User from "../models/userModel.js";
 import TokenUsageRecord from "../models/tokenUsageRecordModel.js";
 import SystemPrompt from "../models/systemPromptModel.js";
 import logger from "../utils/logger.js";
+import { v2 as cloudinary } from "cloudinary";
+
+// Cloudinary config (ensure these env vars are set)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 class WhatsAppMessageProcessor {
   constructor(aiService) {
     this.aiService = aiService; // Expecting an AI service/instance
+  }
+
+  // Helper to normalize message content for AI (similar to messageService.js)
+  static normalizeDbMessageContentForAI(dbMessage) {
+    if (
+      !dbMessage ||
+      typeof dbMessage.content === "undefined" ||
+      dbMessage.content === null
+    ) {
+      return [{ type: "text", text: "[System: Message content unavailable]" }];
+    }
+    if (Array.isArray(dbMessage.content)) {
+      // Already structured
+      return dbMessage.content.filter((part) => {
+        if (part.type === "text" && typeof part.text === "string") return true;
+        if (
+          part.type === "image" &&
+          typeof part.image === "string" &&
+          part.image.trim() !== "" &&
+          typeof part.mimeType === "string"
+        )
+          return true;
+        // Optionally add file support here
+        return false;
+      });
+    }
+    if (typeof dbMessage.content === "string") {
+      const trimmed = dbMessage.content.trim();
+      if (trimmed === "")
+        return [{ type: "text", text: "[System: Message content empty]" }];
+      return [{ type: "text", text: trimmed }];
+    }
+    return [
+      { type: "text", text: "[System: Message content in unexpected format]" },
+    ];
   }
 
   async processIncomingMessage(message, connectionName, sessionDetails) {
@@ -16,6 +59,63 @@ class WhatsAppMessageProcessor {
     const { tools, google, GEMINI_MODEL_NAME, generateText, systemPromptText } =
       aiInstance;
     const userNumber = message.from.split("@")[0];
+
+    let userMessageContent = message.body;
+    let isImageMessage = false;
+    let imageUrl = null;
+    let newContentParts = [];
+    let processedAttachmentsMetadata = [];
+
+    // Handle media (images, files) sent on WhatsApp and upload to Cloudinary
+    if (message.hasMedia) {
+      try {
+        const media = await message.downloadMedia();
+        if (media && media.mimetype && media.mimetype.startsWith("image/")) {
+          // Upload image to Cloudinary
+          const uploadResult = await cloudinary.uploader.upload(
+            `data:${media.mimetype};base64,${media.data}`,
+            {
+              folder: "whatsapp_uploads",
+              public_id: `wa_${userNumber}_${Date.now()}`,
+              resource_type: "image",
+            }
+          );
+          newContentParts.push({
+            type: "image",
+            image: uploadResult.secure_url,
+            mimeType: media.mimetype,
+          });
+          processedAttachmentsMetadata.push({
+            url: uploadResult.secure_url,
+            originalName: media.filename || `image_${Date.now()}`,
+            mimeType: media.mimetype,
+            size: media.data.length, // base64 length, for reference
+            uploadedAt: new Date(),
+          });
+        } else {
+          await message.reply(
+            "Sorry, only image files are supported for AI processing."
+          );
+          return;
+        }
+      } catch (mediaErr) {
+        logger.error(
+          { err: mediaErr },
+          "MessageProcessor: Error handling WhatsApp image upload to Cloudinary"
+        );
+        await message.reply("Sorry, there was an error uploading your image.");
+        return;
+      }
+    }
+    if (!message.hasMedia && message.body && message.body.trim() !== "") {
+      newContentParts.push({ type: "text", text: message.body.trim() });
+    }
+    if (newContentParts.length === 0) {
+      await message.reply(
+        "Message content cannot be empty if no image is provided."
+      );
+      return;
+    }
 
     if (!userId || !systemPromptId || !aiInstance) {
       logger.error(
@@ -64,21 +164,26 @@ class WhatsAppMessageProcessor {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
+      // Add user message (array of content parts) to chat history
       chat.messages.push({
         role: "user",
-        content: message.body,
+        content: newContentParts,
+        attachments: processedAttachmentsMetadata,
         timestamp: new Date(),
         status: "delivered",
       });
 
-      const messagesForAI = chat.messages
-        .slice(-20) // Consider making this limit configurable
-        .map((msg) => ({ role: msg.role, content: msg.content }));
+      const messagesForAI = chat.messages.slice(-20).map((msg) => ({
+        role: msg.role,
+        content: WhatsAppMessageProcessor.normalizeDbMessageContentForAI(msg),
+        ...(msg.toolCalls && { toolCalls: msg.toolCalls }),
+        ...(msg.toolCallId && { toolCallId: msg.toolCallId }),
+      }));
 
       const aiResponse = await generateText({
         model: google(GEMINI_MODEL_NAME),
         tools,
-        maxSteps: 10, // Consider making this configurable
+        maxSteps: 10,
         system: systemPromptText,
         messages: messagesForAI,
       });
