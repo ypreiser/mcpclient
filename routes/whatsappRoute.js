@@ -3,8 +3,29 @@ import express from "express";
 import QRCode from "qrcode";
 import whatsappService from "../utils/whatsappService.js";
 import logger from "../utils/logger.js";
+import WhatsAppConnection from "../models/whatsAppConnectionModel.js";
+import { requireAuth } from "./authRoute.js";
 
 const router = express.Router();
+
+// Get all WhatsApp connections for the authenticated user
+router.get("/connections", requireAuth, async (req, res, next) => {
+  logger.info(
+    { userId: req.user._id },
+    "API: Fetching all WhatsApp connections"
+  );
+  try {
+    const userId = req.user._id;
+    const connections = await WhatsAppConnection.find({ userId })
+      .select(
+        "connectionName systemPromptName lastKnownStatus lastConnectedAt createdAt updatedAt"
+      )
+      .sort({ updatedAt: -1 });
+    res.json({ connections });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Initialize a new WhatsApp session
 router.post("/session", async (req, res, next) => {
