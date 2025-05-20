@@ -31,7 +31,7 @@ if (!isProduction) {
 // In production (isProduction is true), the default Pino output (JSON to stdout/stderr) is used.
 
 // Always log to a file in addition to console
-const logFilePath = path.join(process.cwd(), "full.log");
+const logFilePath = path.join(process.cwd(), logFileName);
 
 if (!loggerOptions.transport) {
   loggerOptions.transport = {};
