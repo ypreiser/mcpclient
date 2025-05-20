@@ -18,7 +18,7 @@ router.get("/connections", requireAuth, async (req, res, next) => {
     const userId = req.user._id;
     const connections = await WhatsAppConnection.find({ userId })
       .select(
-        "connectionName systemPromptName lastKnownStatus lastConnectedAt createdAt updatedAt"
+        "connectionName systemPromptName lastKnownStatus lastConnectedAt createdAt updatedAt phoneNumber"
       )
       .sort({ updatedAt: -1 });
     res.json({ connections });

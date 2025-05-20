@@ -70,10 +70,24 @@ class WhatsAppEventHandler {
       current.qr = null;
       current.isReconnecting = false;
       current.reconnectAttempts = 0;
+      // Persist phone number if available
+      let phoneNumber = null;
+      if (
+        current.client &&
+        current.client.info &&
+        current.client.info.wid &&
+        current.client.info.wid.user
+      ) {
+        phoneNumber = current.client.info.wid.user;
+      }
       connectionPersistence.updateConnectionStatus(
         connectionName,
         "connected",
-        true
+        true,
+        phoneNumber
+      );
+      logger.info(
+        `EventHandler: Session ${connectionName} status updated to connected. Auto-reconnection enabled.`
       );
     }
   }
@@ -88,10 +102,24 @@ class WhatsAppEventHandler {
       current.qr = null;
       current.isReconnecting = false;
       current.reconnectAttempts = 0;
+      // Persist phone number if available
+      let phoneNumber = null;
+      if (
+        current.client &&
+        current.client.info &&
+        current.client.info.wid &&
+        current.client.info.wid.user
+      ) {
+        phoneNumber = current.client.info.wid.user;
+      }
       connectionPersistence.updateConnectionStatus(
         connectionName,
         "authenticated",
-        true
+        true,
+        phoneNumber
+      );
+      logger.info(
+        `EventHandler: Session ${connectionName} status updated to authenticated. Auto-reconnection enabled.`
       );
     }
   }

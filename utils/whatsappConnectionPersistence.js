@@ -22,7 +22,8 @@ class WhatsAppConnectionPersistence {
     userId,
     status,
     autoReconnect,
-    lastConnectedAt = null
+    lastConnectedAt = null,
+    phoneNumber = null
   ) {
     try {
       const updateData = {
@@ -35,7 +36,9 @@ class WhatsAppConnectionPersistence {
       if (lastConnectedAt) {
         updateData.lastConnectedAt = lastConnectedAt;
       }
-
+      if (phoneNumber) {
+        updateData.phoneNumber = phoneNumber;
+      }
       const persistedConnection = await WhatsAppConnection.findOneAndUpdate(
         { connectionName },
         { $set: updateData },
@@ -54,7 +57,12 @@ class WhatsAppConnectionPersistence {
     }
   }
 
-  async updateConnectionStatus(connectionName, status, autoReconnect) {
+  async updateConnectionStatus(
+    connectionName,
+    status,
+    autoReconnect,
+    phoneNumber = null
+  ) {
     try {
       const updateData = {
         lastKnownStatus: status,
@@ -63,6 +71,9 @@ class WhatsAppConnectionPersistence {
       };
       if (status === "connected" || status === "authenticated") {
         updateData.lastConnectedAt = new Date();
+      }
+      if (phoneNumber) {
+        updateData.phoneNumber = phoneNumber;
       }
       await WhatsAppConnection.updateOne(
         { connectionName },

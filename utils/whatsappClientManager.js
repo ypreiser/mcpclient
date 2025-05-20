@@ -259,6 +259,25 @@ class WhatsAppClientManager {
         `ClientManager: client.initialize() completed for '${connectionName}'. Status updates via events.`
       );
 
+      // Extract phone number after successful initialization
+      let phoneNumber = null;
+      if (client.info && client.info.wid && client.info.wid.user) {
+        phoneNumber = client.info.wid.user;
+        logger.info(
+          `ClientManager: Phone number for ${connectionName} is ${phoneNumber}`
+        );
+        // Persist phone number in DB
+        await connectionPersistence.saveConnectionDetails(
+          connectionName,
+          systemPromptName,
+          userId,
+          "connected",
+          true,
+          new Date(),
+          phoneNumber
+        );
+      }
+
       if (isRetry) {
         logger.info(
           `ClientManager: client.initialize() succeeded for retry of ${connectionName}.`

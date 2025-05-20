@@ -33,6 +33,12 @@ const whatsAppConnectionSchema = new mongoose.Schema(
     lastAttemptedReconnectAt: {
       type: Date,
     },
+    phoneNumber: {
+      type: String,
+      default: null,
+      index: true,
+      trim: true,
+    },
   },
   { timestamps: true }
 ); // Adds createdAt and updatedAt
