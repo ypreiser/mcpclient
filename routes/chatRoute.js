@@ -20,11 +20,28 @@ router.get("/", requireAuth, async (req, res) => {
     if (req.user.privlegeLevel === "admin") {
       chats = await Chat.find({})
         .populate("userId", "email name")
-        .sort({ updatedAt: -1 });
+        .sort({ updatedAt: -1 })
+        .select("-messages"); // Exclude messages array
     } else {
-      chats = await Chat.find({ userId: req.user._id }).sort({ updatedAt: -1 });
+      chats = await Chat.find({ userId: req.user._id })
+        .sort({ updatedAt: -1 })
+        .select("-__v -userId -messages"); // Exclude messages array
     }
-    res.json({ chats });
+    // For each chat, add messageCount (requires a second query or a virtual)
+    // We'll do a second query for each chat for simplicity
+    const chatsWithCount = await Promise.all(
+      chats.map(async (chat) => {
+        const messageCount = await Chat.aggregate([
+          { $match: { _id: chat._id } },
+          { $project: { count: { $size: "$messages" } } },
+        ]);
+        return {
+          ...chat.toObject(),
+          messageCount: messageCount[0]?.count || 0,
+        };
+      })
+    );
+    res.json({ chats: chatsWithCount });
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch chats." });
   }

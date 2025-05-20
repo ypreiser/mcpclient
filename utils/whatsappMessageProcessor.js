@@ -172,6 +172,7 @@ class WhatsAppMessageProcessor {
         timestamp: new Date(),
         status: "delivered",
       });
+      chat.messageCount++;
 
       const messagesForAI = chat.messages.slice(-20).map((msg) => ({
         role: msg.role,
@@ -212,6 +213,7 @@ class WhatsAppMessageProcessor {
         timestamp: new Date(),
         status: "sent",
       });
+      chat.messageCount++;
       chat.updatedAt = new Date();
       await chat.save();
 

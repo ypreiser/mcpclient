@@ -71,6 +71,7 @@ const chatSchema = new mongoose.Schema({
     index: true,
   },
   messages: [messageSchema],
+  messageCount: { type: Number, default: 0, required: true }, // New field for fast message count
   metadata: {
     userName: { type: String }, // User's name, if available (e.g., from WhatsApp contact or profile)
     connectionName: { type: String, index: true }, // For WhatsApp, which connection this chat belongs to
@@ -93,7 +94,8 @@ chatSchema.index({ sessionId: 1, source: 1 }, { unique: true }); // Ensures sess
 
 // Pre-save middleware to update `updatedAt` timestamp
 chatSchema.pre("save", function (next) {
-  if (this.isModified()) { // Only update if something has changed
+  if (this.isModified()) {
+    // Only update if something has changed
     this.updatedAt = new Date();
   }
   next();

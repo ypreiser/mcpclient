@@ -308,6 +308,7 @@ const processMessage = async (
       timestamp: new Date(),
       status: "sent",
     });
+    chat.messageCount++;
 
     // Prepare messages for AI: map over historical messages and normalize their content
     // Take last 20 messages. Ensure `msg._id` is available for logging in `normalizeDbMessageContentForAI`.
@@ -384,6 +385,7 @@ const processMessage = async (
       // Assistant messages usually don't have 'attachments' in the same way user messages do.
       // If the assistant refers to or generates files, that's part of its 'content' or 'toolCalls'.
     });
+    chat.messageCount++;
     chat.updatedAt = new Date();
     await chat.save();
 
