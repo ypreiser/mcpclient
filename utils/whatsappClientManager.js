@@ -123,19 +123,19 @@ class WhatsAppClientManager {
 
   async createAndInitializeClient(
     connectionName,
-    systemPromptName,
+    systemPromptId, // Now expects ObjectId
     userId, // Should be ObjectId
     isRetry = false,
     closeCallback // Function to call full session closure
   ) {
     logger.info(
-      `ClientManager: Initializing client for Conn: '${connectionName}', Prompt: '${systemPromptName}', User: '${userId}'${
+      `ClientManager: Initializing client for Conn: '${connectionName}', PromptId: '${systemPromptId}', User: '${userId}'${
         isRetry ? " (Retry)" : ""
       }`
     );
 
     const sessionEntry = this.getOrCreateSessionEntry(connectionName, {
-      systemPromptName,
+      systemPromptId,
       userId,
       closeCallback,
     });
@@ -168,22 +168,22 @@ class WhatsAppClientManager {
     }
 
     try {
+      // Always lookup by _id and userId
       const systemPromptDoc = await SystemPrompt.findOne({
-        name: systemPromptName,
+        _id: systemPromptId,
         userId,
       });
       if (!systemPromptDoc) {
-        const promptExists = await SystemPrompt.exists({
-          name: systemPromptName,
-        });
+        // Check if prompt exists for any user (by _id)
+        const promptExists = await SystemPrompt.exists({ _id: systemPromptId });
         const errorMsg = promptExists
-          ? `Access denied: You do not own system prompt '${systemPromptName}'.`
-          : `System prompt "${systemPromptName}" not found.`;
+          ? `Access denied: You do not own system prompt with id '${systemPromptId}'.`
+          : `System prompt with id "${systemPromptId}" not found.`;
         logger.error(`ClientManager: ${errorMsg} for user ${userId}`);
         throw new Error(errorMsg);
       }
 
-      const aiInstance = await initializeAI(systemPromptName);
+      const aiInstance = await initializeAI(systemPromptId);
       aiInstance.systemPromptText = systemPromptToNaturalLanguage(
         systemPromptDoc.toObject()
       );
@@ -203,7 +203,7 @@ class WhatsAppClientManager {
           store: store,
           clientId: connectionName,
           backupSyncIntervalMs: 300000, // e.g., 5 minutes, for syncing session state
-          dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`, // Local path for Puppeteer data, ensure it's writable and persistent
+          dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`,
         }),
         puppeteer: {
           headless: true,
@@ -216,7 +216,6 @@ class WhatsAppClientManager {
             "--disable-accelerated-2d-canvas",
             "--no-first-run",
             "--no-zygote",
-            // Consider adding: '--user-data-dir=./.wwebjs_puppeteer_data/' // If more puppeteer state needs persistence
           ],
         },
         webVersion: "2.2409.2", // Pin version for stability
@@ -228,7 +227,6 @@ class WhatsAppClientManager {
 
       sessionEntry.client = client;
       sessionEntry.status = "initializing";
-      sessionEntry.systemPromptName = systemPromptName;
       sessionEntry.systemPromptId = systemPromptDoc._id;
       sessionEntry.aiInstance = aiInstance;
       sessionEntry.userId = userId;
@@ -242,7 +240,7 @@ class WhatsAppClientManager {
       if (!isRetry) {
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptName,
+          systemPromptId, // Save the id
           userId,
           "initializing",
           true
@@ -269,7 +267,7 @@ class WhatsAppClientManager {
         // Persist phone number in DB
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptName,
+          systemPromptId,
           userId,
           "connected",
           true,
@@ -298,7 +296,7 @@ class WhatsAppClientManager {
         );
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptName,
+          systemPromptId,
           userId,
           `init_failed: ${error.message.substring(0, 50)}`,
           false

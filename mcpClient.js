@@ -8,9 +8,11 @@ import SystemPrompt from "./models/systemPromptModel.js";
 import logger from "./utils/logger.js";
 
 dotenv.config();
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME 
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME;
 if (!GEMINI_MODEL_NAME) {
-  logger.error("GEMINI_MODEL_NAME is not set. Please set it in your environment variables.");
+  logger.error(
+    "GEMINI_MODEL_NAME is not set. Please set it in your environment variables."
+  );
 }
 
 const GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -27,22 +29,35 @@ if (!GOOGLE_GENERATIVE_AI_API_KEY) {
 // For short-lived AI initializations (like in chatRoute), they are created and used per request.
 
 /**
- * Initialize AI with dynamic system prompt name.
- * @param {string} systemPromptName - The name of the system prompt to use.
+ * Initialize AI with dynamic system prompt id.
+ * @param {string} systemPromptId - The MongoDB ObjectId of the system prompt to use.
  */
-export async function initializeAI(systemPromptName) {
+export async function initializeAI(systemPromptId) {
   if (!GOOGLE_GENERATIVE_AI_API_KEY) {
     throw new Error("GOOGLE_GENERATIVE_AI_API_KEY is not configured.");
   }
 
   try {
-    logger.info(`Initializing AI with system prompt: ${systemPromptName}`);
-    const systemPromptDoc = await SystemPrompt.findOne({ name: systemPromptName });
-    if (!systemPromptDoc) {
-      throw new Error(`System prompt "${systemPromptName}" not found.`);
+    logger.info(`Initializing AI with system prompt id: ${systemPromptId}`);
+    if (!mongoose.Types.ObjectId.isValid(systemPromptId)) {
+      logger.error(
+        `Provided systemPromptId '${systemPromptId}' is not a valid MongoDB ObjectId.`
+      );
+      throw new Error(`Invalid systemPromptId: ${systemPromptId}`);
     }
-    if (!systemPromptDoc.mcpServers || systemPromptDoc.mcpServers.length === 0) {
-      logger.warn(`No MCP servers configured in system prompt: ${systemPromptName}. Proceeding without MCP clients.`);
+    const systemPromptDoc = await SystemPrompt.findById(systemPromptId);
+    if (!systemPromptDoc) {
+      logger.error(`System prompt with id '${systemPromptId}' not found.`);
+      throw new Error(`System prompt with id '${systemPromptId}' not found.`);
+    }
+    logger.debug(`Loaded system prompt: ${JSON.stringify(systemPromptDoc)}`);
+    if (
+      !systemPromptDoc.mcpServers ||
+      systemPromptDoc.mcpServers.length === 0
+    ) {
+      logger.warn(
+        `No MCP servers configured in system prompt id: ${systemPromptId}. Proceeding without MCP clients.`
+      );
       // Fallback: If no MCP servers, tools will be empty.
     }
 
@@ -54,41 +69,56 @@ export async function initializeAI(systemPromptName) {
           continue;
         }
         try {
+          logger.debug(
+            `Creating MCP client for server: ${JSON.stringify(server)}`
+          );
           const transport = new Experimental_StdioMCPTransport({
             command: server.command,
             args: server.args,
           });
-          mcpClients[server.name] = await experimental_createMCPClient({ transport });
+          mcpClients[server.name] = await experimental_createMCPClient({
+            transport,
+          });
           logger.info(`MCP client '${server.name}' created successfully.`);
         } catch (mcpError) {
-          logger.error({ err: mcpError, serverName: server.name }, `Failed to create MCP client '${server.name}'.`);
-          // Decide if this is a fatal error or if the app can run with partial MCP functionality.
-          // For now, we'll log and continue, meaning tools from this client won't be available.
+          logger.error(
+            { err: mcpError, serverName: server.name },
+            `Failed to create MCP client '${server.name}'.`
+          );
         }
       }
     }
 
-
     let combinedTools = {};
     for (const clientName in mcpClients) {
-        try {
-            const client = mcpClients[clientName];
-            const toolSet = await client.tools();
-            combinedTools = { ...combinedTools, ...toolSet };
-            logger.info(`Fetched tools from MCP client '${clientName}'. Tool count: ${Object.keys(toolSet).length}`);
-        } catch (toolError) {
-            logger.error({ err: toolError, clientName }, `Failed to fetch tools from MCP client '${clientName}'.`);
-        }
+      try {
+        const client = mcpClients[clientName];
+        const toolSet = await client.tools();
+        combinedTools = { ...combinedTools, ...toolSet };
+        logger.info(
+          `Fetched tools from MCP client '${clientName}'. Tool count: ${
+            Object.keys(toolSet).length
+          }`
+        );
+      } catch (toolError) {
+        logger.error(
+          { err: toolError, clientName },
+          `Failed to fetch tools from MCP client '${clientName}'.`
+        );
+      }
     }
-
 
     const googleAI = createGoogleGenerativeAI({
       apiKey: GOOGLE_GENERATIVE_AI_API_KEY,
       // model: GEMINI_MODEL_NAME, // Model can be specified per generateText call
     });
 
-    logger.info(`AI initialized successfully for system prompt: ${systemPromptName}. Total tools: ${Object.keys(combinedTools).length}`);
-    
+    logger.info(
+      `AI initialized successfully for system prompt id: ${systemPromptId}. Total tools: ${
+        Object.keys(combinedTools).length
+      }`
+    );
+
     return {
       mcpClients, // Object of named MCP clients { icount: client, another: client }
       tools: combinedTools, // Combined tools from all enabled MCP clients
@@ -102,13 +132,16 @@ export async function initializeAI(systemPromptName) {
             await mcpClients[clientName].close();
             logger.info(`MCP client '${clientName}' closed.`);
           } catch (closeErr) {
-            logger.error({ err: closeErr, clientName }, `Error closing MCP client '${clientName}'.`);
+            logger.error(
+              { err: closeErr, clientName },
+              `Error closing MCP client '${clientName}'.`
+            );
           }
         }
-      }
+      },
     };
   } catch (error) {
-    logger.error({ err: error, systemPromptName }, "Failed to initialize AI:");
+    logger.error({ err: error, systemPromptId }, "Failed to initialize AI:");
     throw error; // Re-throw to be handled by the caller
   }
 }

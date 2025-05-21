@@ -14,6 +14,11 @@ const whatsAppConnectionSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    systemPromptId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SystemPrompt",
+      required: true,
+    },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

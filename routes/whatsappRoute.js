@@ -25,10 +25,10 @@ router.get("/connections", requireAuth, async (req, res, next) => {
 
 // Initialize a new WhatsApp session
 router.post("/session", async (req, res, next) => {
-  const { connectionName, systemPromptName } = req.body;
+  const { connectionName, systemPromptId } = req.body; // Now expect systemPromptId
   const userId = req.user._id;
   logger.info(
-    { connectionName, systemPromptName, userId },
+    { connectionName, systemPromptId, userId },
     "API: Initializing WhatsApp session"
   );
   if (
@@ -41,19 +41,19 @@ router.post("/session", async (req, res, next) => {
     });
   }
   if (
-    !systemPromptName ||
-    typeof systemPromptName !== "string" ||
-    systemPromptName.trim() === ""
+    !systemPromptId ||
+    typeof systemPromptId !== "string" ||
+    systemPromptId.trim() === ""
   ) {
     return res.status(400).json({
-      error: "System prompt name is required and must be a non-empty string.",
+      error: "System prompt id is required and must be a non-empty string.",
     });
   }
 
   try {
     const client = await whatsappService.initializeSession(
       connectionName,
-      systemPromptName,
+      systemPromptId,
       userId
     );
     // Client object itself is complex, just return status.
@@ -65,7 +65,7 @@ router.post("/session", async (req, res, next) => {
     });
   } catch (error) {
     logger.error(
-      { err: error, connectionName, systemPromptName },
+      { err: error, connectionName, systemPromptId },
       "API: Error creating WhatsApp session"
     );
     // Pass to global error handler, or provide specific response

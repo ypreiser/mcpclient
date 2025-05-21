@@ -26,7 +26,7 @@ class WhatsAppService {
   // This is the primary method for creating or retrying a session's client
   async initializeSession(
     connectionName,
-    systemPromptName,
+    systemPromptId, // Now expects ObjectId
     userId, // Expect ObjectId
     isRetry = false
   ) {
@@ -36,7 +36,7 @@ class WhatsAppService {
       );
       throw new Error("Service is shutting down.");
     }
-    const sessionInfoLog = `Conn: '${connectionName}', Prompt: '${systemPromptName}', User: '${userId}'`;
+    const sessionInfoLog = `Conn: '${connectionName}', PromptId: '${systemPromptId}', User: '${userId}'`;
     logger.info(
       `WhatsAppService: Orchestrating session initialization. ${sessionInfoLog}${
         isRetry ? " (Retry)" : ""
@@ -51,7 +51,7 @@ class WhatsAppService {
 
       await this.clientManager.createAndInitializeClient(
         connectionName,
-        systemPromptName,
+        systemPromptId,
         userId,
         isRetry,
         closeCallback
