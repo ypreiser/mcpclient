@@ -17,6 +17,7 @@ import { body, validationResult } from "express-validator";
 import upload from "./utils/uploadMiddleware.js"; // Corrected path
 import fs from "fs";
 import path from "path";
+import multer from "multer"; // Missing import for multer
 
 // Load environment variables
 dotenv.config();
@@ -41,11 +42,17 @@ const app = express();
 // Security Middlewares
 app.use(helmet());
 
-// CORS configuration
-const allowedOrigin = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+const allowedOrigins = ["http://localhost:5173", "http://127.0.0.1:59046"]; // Explicitly set origins
+
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   })
 );
