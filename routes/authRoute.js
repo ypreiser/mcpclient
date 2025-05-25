@@ -32,7 +32,19 @@ const COOKIE_OPTIONS = {
 
 router.post("/register", async (req, res, next) => {
   try {
-    const { email, password, name } = req.body;
+    const {
+      email,
+      password,
+      name,
+      businessName,
+      businessType,
+      businessIdNumber,
+      companyPhone,
+      businessField,
+      website,
+      contactName,
+      contactPhone,
+    } = req.body;
     if (!email || !password) {
       return res
         .status(400)
@@ -56,6 +68,14 @@ router.post("/register", async (req, res, next) => {
       email: email.toLowerCase(),
       password: hashed,
       name,
+      businessName,
+      businessType,
+      businessIdNumber,
+      companyPhone,
+      businessField,
+      website,
+      contactName,
+      contactPhone,
     });
     await user.save();
     logger.info(

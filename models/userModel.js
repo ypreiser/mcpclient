@@ -47,6 +47,16 @@ const UserSchema = new mongoose.Schema({
   }, // Defaults to start of current month
 
   lastTokenUsageUpdate: { type: Date }, // Timestamp of the last token usage event
+
+  // Business and contact information
+  businessName: { type: String, trim: true },
+  businessType: { type: String, trim: true },
+  businessIdNumber: { type: String, trim: true },
+  companyPhone: { type: String, trim: true },
+  businessField: { type: String, trim: true },
+  website: { type: String, trim: true },
+  contactName: { type: String, trim: true },
+  contactPhone: { type: String, trim: true },
 });
 
 // Pre-save hook to update `updatedAt`
