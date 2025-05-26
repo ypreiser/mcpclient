@@ -1,3 +1,4 @@
+// src\mcpClient.js
 //mcpclient/mcpClient.js
 import { experimental_createMCPClient, generateText } from "ai";
 import { Experimental_StdioMCPTransport } from "ai/mcp-stdio";
@@ -5,6 +6,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import dotenv from "dotenv";
 import mongoose from "mongoose"; // Required for SystemPrompt model
 import SystemPrompt from "./models/systemPromptModel.js";
+import botProfileController from "./controllers/botProfileController.js";
 import logger from "./utils/logger.js";
 
 dotenv.config();

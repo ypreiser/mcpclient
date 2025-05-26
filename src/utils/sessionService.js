@@ -43,12 +43,12 @@ const cleanupSession = async (sessionId) => {
 
 const initializeSession = async (
   sessionId,
-  systemPromptName,
+  systemPromptId, // This is the ObjectId (used behind the scenes)
   userIdForTokenBilling
 ) => {
   if (!userIdForTokenBilling) {
     logger.error(
-      { sessionId, systemPromptName },
+      { sessionId, systemPromptId },
       "Critical: userIdForTokenBilling is undefined in initializeSession. Cannot bill tokens."
     );
     const err = new Error(
@@ -68,12 +68,26 @@ const initializeSession = async (
   }
 
   try {
-    const systemPromptDoc = await validateSystemPrompt(
-      systemPromptName,
-      userIdForTokenBilling
-    );
+    // Find by _id (ObjectId) and userId
+    const systemPromptDoc = await SystemPrompt.findOne({
+      _id: systemPromptId,
+      userId: userIdForTokenBilling,
+    });
+    if (!systemPromptDoc) {
+      const promptExists = await SystemPrompt.exists({ _id: systemPromptId });
+      const errorMsg = promptExists
+        ? `Access denied: You do not own system prompt '${systemPromptId}'.`
+        : `System prompt '${systemPromptId}' not found.`;
+      logger.warn(
+        { userIdExpectedOwner: userIdForTokenBilling, systemPromptId },
+        `System prompt validation failed: ${errorMsg}`
+      );
+      const err = new Error(errorMsg);
+      err.status = promptExists ? 403 : 404;
+      throw err;
+    }
 
-    const aiInstance = await initializeAI(systemPromptName);
+    const aiInstance = await initializeAI(systemPromptId); // Use the real id for AI
     const systemPromptText = systemPromptToNaturalLanguage(
       systemPromptDoc.toObject()
     );
@@ -82,21 +96,26 @@ const initializeSession = async (
     sessions.set(sessionId, {
       aiInstance,
       status: "active",
-      systemPromptName,
+      systemPromptId: systemPromptDoc._id, // Store the real id
+      systemPromptName: systemPromptDoc.name, // Store the name for display
       userId: userIdForTokenBilling,
-      systemPromptId: systemPromptDoc._id,
     });
 
     logger.info(
-      `ChatService: Session initialized for '${sessionId}' with prompt '${systemPromptName}'. Tokens billed to user '${userIdForTokenBilling}'.`
+      `ChatService: Session initialized for '${sessionId}' with prompt id '${systemPromptDoc._id}' (name: ${systemPromptDoc.name}). Tokens billed to user '${userIdForTokenBilling}'.`
     );
-    return { status: "active", sessionId, systemPromptName };
+    return {
+      status: "active",
+      sessionId,
+      systemPromptId: systemPromptDoc._id,
+      systemPromptName: systemPromptDoc.name,
+    };
   } catch (error) {
     logger.error(
       {
         err: error,
         sessionId,
-        systemPromptName,
+        systemPromptId,
         userId: userIdForTokenBilling,
       },
       "ChatService: Error during session initialization."

@@ -88,12 +88,10 @@ router.get("/:systemPromptId/history", async (req, res, next) => {
     });
 
     if (!chat) {
-      return res
-        .status(404)
-        .json({
-          error:
-            "Chat session not found or does not match the provided system prompt.",
-        });
+      return res.status(404).json({
+        error:
+          "Chat session not found or does not match the provided system prompt.",
+      });
     }
 
     // Return messages and relevant metadata.
@@ -133,7 +131,7 @@ router.post("/:systemPromptId/start", async (req, res, next) => {
     // Tokens will be billed to prompt.userId._id (owner of the system prompt).
     await chatService.initializeSession(
       clientSessionId,
-      prompt.name,
+      prompt._id, // Pass the ObjectId, not the name
       prompt.userId._id
     );
 
