@@ -12,4 +12,7 @@ sessions/
 .DS_Store
 coverage
 coverage/
+.vscode/
+.vscode
+
 
