@@ -1,3 +1,4 @@
+// src\starter.js
 //mcpclient/starter.js
 import { app, initializeMongoDB, gracefulShutdown } from "./server.js";
 import logger from "./utils/logger.js";

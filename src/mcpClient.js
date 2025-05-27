@@ -1,91 +1,103 @@
 // src\mcpClient.js
-//mcpclient/mcpClient.js
-import { experimental_createMCPClient, generateText } from "ai";
+import { experimental_createMCPClient } from "ai";
 import { Experimental_StdioMCPTransport } from "ai/mcp-stdio";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import dotenv from "dotenv";
-import mongoose from "mongoose"; // Required for SystemPrompt model
-import SystemPrompt from "./models/systemPromptModel.js";
-import botProfileController from "./controllers/botProfileController.js";
+import mongoose from "mongoose";
+import BotProfile from "./models/botProfileModel.js";
+import { botProfileToNaturalLanguage } from "./utils/json2llm.js"; // Import the converter
 import logger from "./utils/logger.js";
 
 dotenv.config();
 const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME;
 if (!GEMINI_MODEL_NAME) {
-  logger.error(
-    "GEMINI_MODEL_NAME is not set. Please set it in your environment variables."
-  );
+  logger.error("GEMINI_MODEL_NAME is not set.");
 }
 
 const GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-
 if (!GOOGLE_GENERATIVE_AI_API_KEY) {
-  logger.error(
-    "GOOGLE_GENERATIVE_AI_API_KEY is not set. Please set it in your environment variables."
-  );
+  logger.error("GOOGLE_GENERATIVE_AI_API_KEY is not set.");
+  throw new Error("Google Generative AI API Key is not configured.");
 }
 
-// Store MCP clients globally to manage their lifecycle if needed, though typically managed by consumer.
-// This simple example doesn't have a global cleanup for MCP clients from here.
-// The consumer (e.g. whatsappService) should manage closing them if they are long-lived.
-// For short-lived AI initializations (like in chatRoute), they are created and used per request.
-
-/**
- * Initialize AI with dynamic system prompt id.
- * @param {string} systemPromptId - The MongoDB ObjectId of the system prompt to use.
- */
-export async function initializeAI(systemPromptId) {
-  if (!GOOGLE_GENERATIVE_AI_API_KEY) {
-    throw new Error("GOOGLE_GENERATIVE_AI_API_KEY is not configured.");
-  }
-
+export async function initializeAI(botProfileId) {
   try {
-    logger.info(`Initializing AI with system prompt id: ${systemPromptId}`);
-    if (!mongoose.Types.ObjectId.isValid(systemPromptId)) {
+    logger.info(
+      { botProfileId },
+      `Initializing AI services for bot profile ID.`
+    );
+    if (!mongoose.Types.ObjectId.isValid(botProfileId)) {
       logger.error(
-        `Provided systemPromptId '${systemPromptId}' is not a valid MongoDB ObjectId.`
+        { botProfileId },
+        "Provided botProfileId is not a valid MongoDB ObjectId."
       );
-      throw new Error(`Invalid systemPromptId: ${systemPromptId}`);
+      throw new Error(`Invalid botProfileId format: ${botProfileId}`);
     }
-    const systemPromptDoc = await SystemPrompt.findById(systemPromptId);
-    if (!systemPromptDoc) {
-      logger.error(`System prompt with id '${systemPromptId}' not found.`);
-      throw new Error(`System prompt with id '${systemPromptId}' not found.`);
+
+    const botProfileDoc = await BotProfile.findById(botProfileId).lean();
+    if (!botProfileDoc) {
+      logger.error(
+        { botProfileId },
+        "Bot profile not found during AI initialization."
+      );
+      throw new Error(`Bot profile with id '${botProfileId}' not found.`);
     }
-    logger.debug(`Loaded system prompt: ${JSON.stringify(systemPromptDoc)}`);
-    if (
-      !systemPromptDoc.mcpServers ||
-      systemPromptDoc.mcpServers.length === 0
-    ) {
+
+    logger.debug(
+      {
+        botProfileId,
+        name: botProfileDoc.name,
+        mcpServersCount: botProfileDoc.mcpServers?.length || 0,
+      },
+      "Loaded bot profile for AI initialization."
+    );
+
+    // Generate the system prompt text from the bot profile
+    const systemPromptText = botProfileToNaturalLanguage(botProfileDoc); // botProfileDoc is already a plain object due to .lean()
+    if (!systemPromptText || systemPromptText.trim() === "") {
       logger.warn(
-        `No MCP servers configured in system prompt id: ${systemPromptId}. Proceeding without MCP clients.`
+        { botProfileId, name: botProfileDoc.name },
+        "Generated system prompt text is empty. AI will operate without a system instruction."
       );
-      // Fallback: If no MCP servers, tools will be empty.
+    } else {
+      logger.info(
+        {
+          botProfileId,
+          name: botProfileDoc.name,
+          systemPromptLength: systemPromptText.length,
+        },
+        "System prompt text generated."
+      );
+      // For debugging, you might log a snippet:
+      // logger.debug({ botProfileId, systemPromptSnippet: systemPromptText.substring(0, 100) + "..." });
     }
 
     const mcpClients = {};
-    if (systemPromptDoc.mcpServers && systemPromptDoc.mcpServers.length > 0) {
-      for (const server of systemPromptDoc.mcpServers) {
-        if (!server.enabled) {
-          logger.info(`MCP server '${server.name}' is disabled, skipping.`);
+    if (botProfileDoc.mcpServers && botProfileDoc.mcpServers.length > 0) {
+      for (const serverConfig of botProfileDoc.mcpServers) {
+        if (!serverConfig.enabled) {
+          logger.info(
+            { botProfileId, serverName: serverConfig.name },
+            `MCP server '${serverConfig.name}' is disabled, skipping.`
+          );
           continue;
         }
         try {
-          logger.debug(
-            `Creating MCP client for server: ${JSON.stringify(server)}`
-          );
           const transport = new Experimental_StdioMCPTransport({
-            command: server.command,
-            args: server.args,
+            command: serverConfig.command,
+            args: serverConfig.args || [],
           });
-          mcpClients[server.name] = await experimental_createMCPClient({
+          mcpClients[serverConfig.name] = await experimental_createMCPClient({
             transport,
           });
-          logger.info(`MCP client '${server.name}' created successfully.`);
+          logger.info(
+            { botProfileId, serverName: serverConfig.name },
+            `MCP client '${serverConfig.name}' created successfully.`
+          );
         } catch (mcpError) {
           logger.error(
-            { err: mcpError, serverName: server.name },
-            `Failed to create MCP client '${server.name}'.`
+            { err: mcpError, botProfileId, serverName: serverConfig.name },
+            `Failed to create MCP client '${serverConfig.name}'.`
           );
         }
       }
@@ -98,44 +110,54 @@ export async function initializeAI(systemPromptId) {
         const toolSet = await client.tools();
         combinedTools = { ...combinedTools, ...toolSet };
         logger.info(
-          `Fetched tools from MCP client '${clientName}'. Tool count: ${
-            Object.keys(toolSet).length
-          }`
+          { botProfileId, clientName, toolCount: Object.keys(toolSet).length },
+          `Fetched tools from MCP client '${clientName}'.`
         );
       } catch (toolError) {
         logger.error(
-          { err: toolError, clientName },
+          { err: toolError, botProfileId, clientName },
           `Failed to fetch tools from MCP client '${clientName}'.`
         );
       }
     }
 
-    const googleAI = createGoogleGenerativeAI({
+    const google = createGoogleGenerativeAI({
       apiKey: GOOGLE_GENERATIVE_AI_API_KEY,
-      // model: GEMINI_MODEL_NAME, // Model can be specified per generateText call
     });
 
     logger.info(
-      `AI initialized successfully for system prompt id: ${systemPromptId}. Total tools: ${
-        Object.keys(combinedTools).length
-      }`
+      {
+        botProfileId,
+        name: botProfileDoc.name,
+        totalTools: Object.keys(combinedTools).length,
+      },
+      `AI services initialized successfully for bot profile.`
     );
 
     return {
-      mcpClients, // Object of named MCP clients { icount: client, another: client }
-      tools: combinedTools, // Combined tools from all enabled MCP clients
-      google: googleAI,
-      GEMINI_MODEL_NAME, // Allow model to be specified at generation time if needed
-      generateText,
-      // Function to close all initialized MCP clients for this instance
+      mcpClients,
+      tools: combinedTools,
+      google,
+      GEMINI_MODEL_NAME,
+      systemPromptText, // <<<< ADDED THIS to the returned object
       closeMcpClients: async () => {
+        // ... (implementation as before)
+        logger.info({ botProfileId }, "Closing MCP clients for AI instance.");
         for (const clientName in mcpClients) {
           try {
-            await mcpClients[clientName].close();
-            logger.info(`MCP client '${clientName}' closed.`);
+            if (
+              mcpClients[clientName] &&
+              typeof mcpClients[clientName].close === "function"
+            ) {
+              await mcpClients[clientName].close();
+              logger.info(
+                { botProfileId, clientName },
+                `MCP client '${clientName}' closed.`
+              );
+            }
           } catch (closeErr) {
             logger.error(
-              { err: closeErr, clientName },
+              { err: closeErr, botProfileId, clientName },
               `Error closing MCP client '${clientName}'.`
             );
           }
@@ -143,13 +165,10 @@ export async function initializeAI(systemPromptId) {
       },
     };
   } catch (error) {
-    logger.error({ err: error, systemPromptId }, "Failed to initialize AI:");
-    throw error; // Re-throw to be handled by the caller
+    logger.error(
+      { err: error, botProfileId },
+      "Critical failure during AI services initialization:"
+    );
+    throw error;
   }
 }
-
-// SIGTERM handling should be in the main server.js or service that *uses* initializeAI.
-// If mcpClient.js were a standalone process, it would need its own mongoose connection and SIGTERM.
-// Since it's a library, the main application (server.js) handles mongoose connection.
-// Consumers of initializeAI (like whatsappService) should use the returned `closeMcpClients`
-// function during their own cleanup.

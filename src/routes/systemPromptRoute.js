@@ -1,3 +1,4 @@
+// src\routes\systemPromptRoute.js
 //mcpclient/routes/systemPromptRoute.js
 import express from "express";
 import SystemPrompt from "../models/systemPromptModel.js";

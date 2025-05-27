@@ -1,5 +1,5 @@
-// chatUtils.js
-import SystemPrompt from "../models/systemPromptModel.js";
+// src\utils\chatUtils.js
+import BotProfile from "../models/botProfileModel.js";
 import logger from "../utils/logger.js";
 import { URL } from "url";
 
@@ -13,26 +13,26 @@ const isUrl = (str) => {
   }
 };
 
-const validateSystemPrompt = async (systemPromptName, userIdExpectedOwner) => {
-  const systemPromptDoc = await SystemPrompt.findOne({
-    name: systemPromptName,
+const validateBotProfile = async (botProfileName, userIdExpectedOwner) => {
+  const botProfileDoc = await BotProfile.findOne({
+    name: botProfileName,
     userId: userIdExpectedOwner,
   });
 
-  if (!systemPromptDoc) {
-    const promptExists = await SystemPrompt.exists({ name: systemPromptName });
-    const errorMsg = promptExists
-      ? `Access denied: You do not own system prompt '${systemPromptName}'.`
-      : `System prompt '${systemPromptName}' not found.`;
+  if (!botProfileDoc) {
+    const profileExists = await BotProfile.exists({ name: botProfileName });
+    const errorMsg = profileExists
+      ? `Access denied: You do not own bot profile '${botProfileName}'.`
+      : `Bot profile '${botProfileName}' not found.`;
     logger.warn(
-      { userIdExpectedOwner, systemPromptName },
-      `System prompt validation failed: ${errorMsg}`
+      { userIdExpectedOwner, botProfileName },
+      `Bot profile validation failed: ${errorMsg}`
     );
     const err = new Error(errorMsg);
-    err.status = promptExists ? 403 : 404;
+    err.status = profileExists ? 403 : 404;
     throw err;
   }
-  return systemPromptDoc;
+  return botProfileDoc;
 };
 
-export { isUrl, validateSystemPrompt };
+export { isUrl, validateBotProfile };

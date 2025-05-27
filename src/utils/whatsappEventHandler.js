@@ -1,16 +1,19 @@
-//mcpclient/utils/whatsappEventHandler.js
+// src\utils\whatsappEventHandler.js
 import logger from "../utils/logger.js";
 import connectionPersistence from "./whatsappConnectionPersistence.js";
-// WhatsAppMessageProcessor will be instantiated and passed by WhatsAppService
 
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_INITIAL_DELAY_MS = 5000;
+const MAX_RECONNECT_ATTEMPTS = parseInt(
+  process.env.WHATSAPP_MAX_RECONNECT_ATTEMPTS || "5"
+);
+const RECONNECT_INITIAL_DELAY_MS = parseInt(
+  process.env.WHATSAPP_RECONNECT_DELAY_MS || "5000"
+);
 
 class WhatsAppEventHandler {
   constructor(sessionsMap, messageProcessor, initializeSessionFn) {
-    this.sessions = sessionsMap; // Reference to the shared sessions Map from ClientManager/WhatsAppService
+    this.sessions = sessionsMap;
     this.messageProcessor = messageProcessor;
-    this.initializeSession = initializeSessionFn; // Function to re-initialize a session
+    this.initializeSession = initializeSessionFn;
   }
 
   registerEventHandlers(client, connectionName) {
@@ -37,57 +40,42 @@ class WhatsAppEventHandler {
 
   onQR(qr, connectionName) {
     logger.info(
-      `EventHandler: QR Code received for '${connectionName}'. Manual scan required.`
+      `EventHandler: QR Code received for '${connectionName}'. Scan required.`
     );
-    const current = this.sessions.get(connectionName);
-    if (current) {
-      current.qr = qr;
-      current.status = "qr_ready";
-      current.isReconnecting = false;
-      current.reconnectAttempts = 0;
+    const session = this.sessions.get(connectionName);
+    if (session) {
+      session.qr = qr;
+      session.status = "qr_ready";
+      session.isReconnecting = false;
+      session.reconnectAttempts = 0;
       connectionPersistence.updateConnectionStatus(
         connectionName,
         "qr_pending_scan",
         false
-      );
-      logger.info(
-        `EventHandler: Session ${connectionName} status updated to qr_ready. Auto-reconnection disabled pending scan.`
-      );
-    } else {
+      ); // Auto-reconnect disabled
+    } else
       logger.error(
-        `CRITICAL: Session '${connectionName}' not found in map when 'qr' event fired.`
+        `CRITICAL: Session '${connectionName}' not found in map for 'qr' event.`
       );
-    }
   }
 
   onReady(connectionName) {
+    // Or 'connected' depending on wwebjs version for full operational readiness
     logger.info(
       `EventHandler: WhatsApp client is ready for '${connectionName}'.`
     );
-    const current = this.sessions.get(connectionName);
-    if (current) {
-      current.status = "connected";
-      current.qr = null;
-      current.isReconnecting = false;
-      current.reconnectAttempts = 0;
-      // Persist phone number if available
-      let phoneNumber = null;
-      if (
-        current.client &&
-        current.client.info &&
-        current.client.info.wid &&
-        current.client.info.wid.user
-      ) {
-        phoneNumber = current.client.info.wid.user;
-      }
+    const session = this.sessions.get(connectionName);
+    if (session) {
+      session.status = "connected"; // Or "authenticated" if that's the more stable state post-ready
+      session.qr = null;
+      session.isReconnecting = false;
+      session.reconnectAttempts = 0;
+      const phoneNumber = session.client?.info?.wid?.user || null;
       connectionPersistence.updateConnectionStatus(
         connectionName,
         "connected",
         true,
         phoneNumber
-      );
-      logger.info(
-        `EventHandler: Session ${connectionName} status updated to connected. Auto-reconnection enabled.`
       );
     }
   }
@@ -96,30 +84,18 @@ class WhatsAppEventHandler {
     logger.info(
       `EventHandler: WhatsApp client authenticated for '${connectionName}'.`
     );
-    const current = this.sessions.get(connectionName);
-    if (current) {
-      current.status = "authenticated";
-      current.qr = null;
-      current.isReconnecting = false;
-      current.reconnectAttempts = 0;
-      // Persist phone number if available
-      let phoneNumber = null;
-      if (
-        current.client &&
-        current.client.info &&
-        current.client.info.wid &&
-        current.client.info.wid.user
-      ) {
-        phoneNumber = current.client.info.wid.user;
-      }
+    const session = this.sessions.get(connectionName);
+    if (session) {
+      session.status = "authenticated";
+      session.qr = null;
+      session.isReconnecting = false;
+      session.reconnectAttempts = 0;
+      const phoneNumber = session.client?.info?.wid?.user || null;
       connectionPersistence.updateConnectionStatus(
         connectionName,
         "authenticated",
         true,
         phoneNumber
-      );
-      logger.info(
-        `EventHandler: Session ${connectionName} status updated to authenticated. Auto-reconnection enabled.`
       );
     }
   }
@@ -128,34 +104,25 @@ class WhatsAppEventHandler {
     logger.error(
       `EventHandler: WhatsApp authentication failed for '${connectionName}'. Error: ${errorMsg}`
     );
-    const current = this.sessions.get(connectionName);
-    if (current) {
-      current.status = "auth_failed";
-      current.isReconnecting = false;
+    const session = this.sessions.get(connectionName);
+    if (session) {
+      session.status = "auth_failed";
+      session.isReconnecting = false;
       await connectionPersistence.updateConnectionStatus(
         connectionName,
         "auth_failed",
         false
       );
-      // The main service's closeSession should be called here to ensure full cleanup
-      // This creates a slight circular dependency if not handled carefully.
-      // For now, we assume the main service will handle the full closure.
-      // Or, ClientManager can emit an event that WhatsAppService listens to.
-      if (typeof current.closeCallback === "function") {
-        await current.closeCallback(true, true); // forceClose = true, calledFromAuthFailure = true
+      if (typeof session.closeCallback === "function") {
+        await session.closeCallback(true, true); // forceClose, authFailure
       }
     } else {
-      logger.error(`Session ${connectionName} not found during auth_failure.`);
-      const conn = await connectionPersistence.getByConnectionName(
-        connectionName
+      // If session doesn't exist in map, update DB directly
+      await connectionPersistence.updateConnectionStatus(
+        connectionName,
+        "auth_failed",
+        false
       );
-      if (conn) {
-        await connectionPersistence.updateConnectionStatus(
-          connectionName,
-          "auth_failed",
-          false
-        );
-      }
     }
   }
 
@@ -168,57 +135,64 @@ class WhatsAppEventHandler {
     if (
       !session ||
       [
-        "closed",
+        "closed_manual",
         "closed_forced",
         "auth_failed",
         "disconnected_permanent",
       ].includes(session.status)
     ) {
       logger.info(
-        `EventHandler: Session ${connectionName} not found or in terminal state. No reconnect action. Status: ${session?.status}`
+        `EventHandler: Session ${connectionName} not found or in terminal state (${session?.status}). No reconnect.`
       );
-      if (!session) {
-        const connEntry = await connectionPersistence.getByConnectionName(
-          connectionName
-        );
-        if (connEntry && connEntry.autoReconnect) {
-          await connectionPersistence.updateConnectionStatus(
-            connectionName,
-            `disconnected: ${reason}`,
-            true
-          );
-        }
-      }
       return;
     }
-
     if (
       session.isReconnecting &&
       (session.status === "reconnecting" || session.status === "initializing")
     ) {
       logger.info(
-        `EventHandler: Session ${connectionName} already in reconnect/init cycle. Ignoring duplicate disconnect.`
+        `EventHandler: Session ${connectionName} already in reconnect/init cycle. Ignoring disconnect.`
       );
+      return;
+    }
+
+    // Check DB for autoReconnect flag if session doesn't have it (e.g., fresh start)
+    let autoReconnectEnabled = session.autoReconnect;
+    if (autoReconnectEnabled === undefined) {
+      const dbConn = await connectionPersistence.getByConnectionName(
+        connectionName
+      );
+      autoReconnectEnabled = dbConn ? dbConn.autoReconnect : false; // Default to false if not found
+      if (session) session.autoReconnect = autoReconnectEnabled; // Cache it
+    }
+
+    if (!autoReconnectEnabled) {
+      logger.info(
+        `EventHandler: Auto-reconnect disabled for ${connectionName}. Marking as disconnected.`
+      );
+      session.status = "disconnected";
+      await connectionPersistence.updateConnectionStatus(
+        connectionName,
+        "disconnected",
+        false
+      );
+      if (typeof session.closeCallback === "function")
+        await session.closeCallback(true); // Force close
       return;
     }
 
     await connectionPersistence.updateConnectionStatus(
       connectionName,
       "reconnecting",
-      session.autoReconnect !== undefined ? session.autoReconnect : true
+      true
     );
-
     session.status = "reconnecting";
     session.isReconnecting = true;
     session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
 
-    logger.info(
-      `EventHandler: Session ${connectionName} runtime reconnect attempt ${session.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}.`
-    );
-
     if (session.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
       logger.error(
-        `EventHandler: Max runtime reconnect attempts for ${connectionName}. Giving up cycle.`
+        `EventHandler: Max runtime reconnect attempts for ${connectionName}. Disabling auto-reconnect.`
       );
       session.isReconnecting = false;
       session.status = "disconnected_permanent";
@@ -227,82 +201,73 @@ class WhatsAppEventHandler {
         "disconnected_permanent",
         false
       );
-      if (typeof session.closeCallback === "function") {
-        await session.closeCallback(true); // forceClose
-      }
+      if (typeof session.closeCallback === "function")
+        await session.closeCallback(true);
       return;
     }
 
     if (session.client) {
       try {
         await session.client.destroy();
-        logger.info(
-          `EventHandler: Old client for ${connectionName} destroyed for reconnect attempt ${session.reconnectAttempts}.`
-        );
       } catch (e) {
-        logger.error(
-          { err: e },
-          `EventHandler: Error destroying client ${connectionName} during reconnect prep.`
-        );
+        logger.error({ err: e }, `Error destroying client ${connectionName}`);
       }
       session.client = null;
     }
 
-    const delay = RECONNECT_INITIAL_DELAY_MS * session.reconnectAttempts;
+    const delay = Math.min(
+      RECONNECT_INITIAL_DELAY_MS * Math.pow(2, session.reconnectAttempts - 1),
+      60000
+    ); // Exponential backoff up to 1 min
     logger.info(
       `EventHandler: Scheduling runtime reconnect for ${connectionName} in ${
         delay / 1000
-      }s.`
+      }s (Attempt ${session.reconnectAttempts}).`
     );
 
     setTimeout(async () => {
-      const currentSessionState = this.sessions.get(connectionName);
-      if (!currentSessionState || !currentSessionState.isReconnecting) {
+      const currentSession = this.sessions.get(connectionName);
+      if (!currentSession || !currentSession.isReconnecting) {
         logger.info(
-          `EventHandler: Runtime reconnect for ${connectionName} aborted (session removed/flag cleared).`
+          `EventHandler: Runtime reconnect for ${connectionName} aborted.`
         );
         return;
       }
       try {
-        logger.info(
-          `EventHandler: Executing scheduled runtime reconnect for ${connectionName} (Attempt ${currentSessionState.reconnectAttempts})`
-        );
-        // We need a way to call the main initializeSession function from the WhatsAppService facade
         await this.initializeSession(
           connectionName,
-          currentSessionState.systemPromptName,
-          currentSessionState.userId,
-          true // isRetry = true
+          currentSession.botProfileId,
+          currentSession.userId,
+          true
         );
       } catch (error) {
         logger.error(
           { err: error },
           `EventHandler: Scheduled runtime reconnect for ${connectionName} failed.`
         );
+        // Disconnected event will fire again if init fails, leading to next attempt or max out
       }
     }, delay);
   }
 
   async onMessage(message, connectionName) {
-    if (message.fromMe || message.from === "status@broadcast") return;
+    if (message.fromMe || message.isStatus) return; // isStatus for wwebjs v1.23+
 
-    const currentSession = this.sessions.get(connectionName);
-    if (
-      !currentSession ||
-      !["connected", "authenticated"].includes(currentSession.status)
-    ) {
+    const session = this.sessions.get(connectionName);
+    if (!session || !["connected", "authenticated"].includes(session.status)) {
       logger.warn(
-        `EventHandler: Message for ${connectionName} from ${message.from} but session not ready (Status: ${currentSession?.status}). Ignoring.`
+        `EventHandler: Message for ${connectionName} from ${message.from} but session not ready (Status: ${session?.status}).`
       );
       return;
     }
     logger.info(
       `EventHandler: Message received for ${connectionName} from ${message.from}`
     );
+    // Pass the full session entry which includes aiInstance, botProfileId, userId, etc.
     await this.messageProcessor.processIncomingMessage(
       message,
       connectionName,
-      currentSession
+      session
     );
   }
 }

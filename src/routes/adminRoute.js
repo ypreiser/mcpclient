@@ -1,6 +1,7 @@
+// src\routes\adminRoute.js
 //mcpclient/routes/adminRoute.js
 import User from "../models/userModel.js";
-import SystemPrompt from "../models/systemPromptModel.js";
+import BotProfile from "../models/botProfileModel.js";
 import express from "express";
 import { requireAuth } from "./authRoute.js";
 
@@ -27,15 +28,20 @@ router.get("/users", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/user/:id/prompts - List all system prompts for a user
-router.get("/user/:id/prompts", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const prompts = await SystemPrompt.find({ userId: req.params.id });
-    res.json({ prompts });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch prompts." });
+// GET /api/admin/user/:id/profiles - List all bot profiles for a user
+router.get(
+  "/user/:id/profiles",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const profiles = await BotProfile.find({ userId: req.params.id });
+      res.json({ profiles });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch profiles." });
+    }
   }
-});
+);
 
 // GET /api/admin/user/:id - Get a single user's details (for future admin actions)
 router.get("/user/:id", requireAuth, requireAdmin, async (req, res) => {

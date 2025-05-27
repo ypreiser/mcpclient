@@ -1,4 +1,4 @@
-// chatService.js
+// src\utils\chatService.js
 import { initializeSession, getSession, endSession } from "./sessionService.js";
 import { processMessage } from "./messageService.js";
 

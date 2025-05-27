@@ -5,7 +5,7 @@ import { beforeAll, afterAll, afterEach, vi } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import User from "../../models/userModel.js"; // Adjust path as needed
-import SystemPrompt from "../../models/systemPromptModel.js"; // Adjust path
+import BotProfile from "../../models/botProfileModel.js"; // Adjust path
 import Chat from "../../models/chatModel.js"; // Adjust path
 import TokenUsageRecord from "../../models/tokenUsageRecordModel.js"; // Adjust path
 // Import other models as you write tests for them

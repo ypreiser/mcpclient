@@ -1,15 +1,15 @@
-// tokenUsageService.js
+// src\utils\tokenUsageService.js
 import TokenUsageRecord from "../models/tokenUsageRecordModel.js";
 import User from "../models/userModel.js";
-import SystemPrompt from "../models/systemPromptModel.js";
+import BotProfile from "../models/botProfileModel.js";
 import logger from "../utils/logger.js";
 
 /**
- * Logs token usage for a chat message and updates user and system prompt usage.
+ * Logs token usage for a chat message and updates user and bot profile usage.
  * @param {Object} params
  * @param {string|ObjectId} params.userIdForTokenBilling
- * @param {string|ObjectId} params.systemPromptId
- * @param {string} params.systemPromptName
+ * @param {string|ObjectId} params.botProfileId
+ * @param {string} params.botProfileName
  * @param {string|ObjectId} params.chatId
  * @param {string} params.modelName
  * @param {number} params.promptTokens
@@ -19,8 +19,8 @@ import logger from "../utils/logger.js";
  */
 export async function logTokenUsage({
   userIdForTokenBilling,
-  systemPromptId,
-  systemPromptName,
+  botProfileId,
+  botProfileName,
   chatId,
   modelName,
   promptTokens,
@@ -50,8 +50,8 @@ export async function logTokenUsage({
   const totalTokens = promptTokens + completionTokens;
   const usageRecord = new TokenUsageRecord({
     userId: userIdForTokenBilling,
-    systemPromptId,
-    systemPromptName,
+    botProfileId,
+    botProfileName,
     chatId,
     source,
     modelName,
@@ -66,8 +66,8 @@ export async function logTokenUsage({
     promptTokens,
     completionTokens,
   });
-  await SystemPrompt.logTokenUsage({
-    systemPromptId,
+  await BotProfile.logTokenUsage({
+    botProfileId,
     promptTokens,
     completionTokens,
   });

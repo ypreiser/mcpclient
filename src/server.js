@@ -1,4 +1,4 @@
-// mcpclient/server.js
+// src\server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,7 +9,7 @@ import cookieParser from "cookie-parser";
 import logger from "./utils/logger.js";
 
 // Import Routes
-import botProfileRoutes from "./routes/botProfileRoute.js";
+import botProfileRoutes from "./routes/botProfileRoute.js"; // UPDATED TO BOTPROFILE
 import whatsappRoutes from "./routes/whatsappRoute.js";
 import authRoutes, { requireAuth } from "./routes/authRoute.js";
 import publicChatRoutes from "./routes/publicChatRoute.js";
@@ -22,11 +22,9 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 
-// Load environment variables
 dotenv.config();
 const MONGODB_URI = process.env.MONGODB_URI;
 
-// Validate required environment variables
 if (!MONGODB_URI) {
   logger.error(
     "MONGODB_URI is not set. Please set it in your environment variables."
@@ -45,11 +43,8 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
-
-// Security Middlewares
 app.use(helmet());
 
-// CORS Configuration
 const allowedOrigins = (
   process.env.ALLOWED_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173"
 ).split(",");
@@ -69,7 +64,6 @@ app.use(
   })
 );
 
-// Parsing middlewares
 app.use(express.json({ limit: process.env.JSON_PAYLOAD_LIMIT || "10mb" }));
 app.use(
   express.urlencoded({
@@ -79,7 +73,6 @@ app.use(
 );
 app.use(cookieParser());
 
-// Rate Limiting - general
 const generalRateLimiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"),
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "200"),
@@ -96,7 +89,6 @@ const generalRateLimiter = rateLimit({
 });
 app.use("/", generalRateLimiter);
 
-// Stricter rate limiting for authentication routes
 const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: parseInt(process.env.AUTH_RATE_LIMIT_MAX_REQUESTS || "15"),
@@ -112,7 +104,6 @@ const authRateLimiter = rateLimit({
 });
 app.use("/api/auth/", authRateLimiter);
 
-// Initialize MongoDB connection
 async function initializeMongoDB() {
   try {
     await mongoose.connect(MONGODB_URI, {});
@@ -123,7 +114,6 @@ async function initializeMongoDB() {
   }
 }
 
-// Log incoming requests
 app.use((req, res, next) => {
   const startTime = process.hrtime();
   const logEntry = {
@@ -160,7 +150,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Authentication middleware for protected routes
 app.use((req, res, next) => {
   const openApiPaths = [
     "/api/auth/login",
@@ -173,23 +162,13 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS" && req.path.startsWith("/api/")) {
     return res.sendStatus(204);
   }
-
-  if (req.path.startsWith("/chat/")) {
+  if (req.path.startsWith("/chat/")) return next(); // Public chat routes
+  if (openApiPaths.some((openPath) => req.path.startsWith(openPath)))
     return next();
-  }
-
-  if (openApiPaths.some((openPath) => req.path.startsWith(openPath))) {
-    return next();
-  }
-
-  if (req.path.startsWith("/api/")) {
-    return requireAuth(req, res, next);
-  }
-
-  return next();
+  if (req.path.startsWith("/api/")) return requireAuth(req, res, next); // Protect other API routes
+  return next(); // For non-API routes (e.g. serving frontend)
 });
 
-// File upload endpoint (authenticated)
 app.post(
   "/api/upload",
   requireAuth,
@@ -211,8 +190,8 @@ app.post(
       };
       logger.info(
         { file: fileMeta, userId: req.user._id },
-        "File uploaded successfully via Cloudinary."
-      );
+        "File uploaded successfully."
+      ); // Removed 'via Cloudinary' for generality
       res.status(201).json({ file: fileMeta });
     } catch (error) {
       logger.error(
@@ -232,7 +211,7 @@ app.post(
   }
 );
 
-// Serve uploaded files securely (Example for LOCAL uploads)
+// This route is for serving LOCAL files. If using only cloud storage, it can be removed.
 app.get("/uploads/:filename", requireAuth, (req, res, next) => {
   const filename = path.basename(req.params.filename);
   const uploadsDir = path.join(process.cwd(), "uploads");
@@ -245,7 +224,6 @@ app.get("/uploads/:filename", requireAuth, (req, res, next) => {
     );
     return res.status(403).json({ error: "Forbidden." });
   }
-
   fs.access(filePath, fs.constants.F_OK, (errAccess) => {
     if (errAccess) {
       logger.warn(
@@ -254,22 +232,19 @@ app.get("/uploads/:filename", requireAuth, (req, res, next) => {
       );
       return res.status(404).json({ error: "File not found." });
     }
-
     res.sendFile(filePath, (errSend) => {
-      if (errSend) {
+      if (errSend)
         logger.error(
           { err: errSend, filePath, userId: req.user?._id },
           "Error sending local file."
         );
-        // Avoid double response if headers already sent
-      }
     });
   });
 });
 
 // Register API Routes
 app.use("/api/auth", authRoutes);
-app.use("/api/botprofile", requireAuth, botProfileRoutes);
+app.use("/api/botprofile", requireAuth, botProfileRoutes); // Correctly using botProfileRoutes
 app.use("/api/whatsapp", requireAuth, whatsappRoutes);
 app.use("/api/admin", requireAuth, adminRoutes);
 app.use("/api/chats", requireAuth, chatRoutes);
@@ -277,7 +252,6 @@ app.use("/api/chats", requireAuth, chatRoutes);
 // Public Routes
 app.use("/chat", publicChatRoutes);
 
-// Health check endpoint
 app.get("/health", (req, res) => {
   const healthStatus = {
     status: "UP",
@@ -285,15 +259,10 @@ app.get("/health", (req, res) => {
     mongodb:
       mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
   };
-  if (mongoose.connection.readyState !== 1) {
-    res.status(503).json(healthStatus);
-  } else {
-    res.status(200).json(healthStatus);
-  }
+  res
+    .status(mongoose.connection.readyState === 1 ? 200 : 503)
+    .json(healthStatus);
 });
-
-// Fallback for unhandled API routes - 404
-// THIS MUST BE AFTER ALL OTHER /api/... ROUTES
 
 app.all(/^\/api\/.*/, (req, res) => {
   logger.warn(
@@ -303,7 +272,6 @@ app.all(/^\/api\/.*/, (req, res) => {
   res.status(404).json({ error: "API endpoint not found." });
 });
 
-// Custom API Error Class
 class ApiError extends Error {
   constructor(statusCode, message, details = null) {
     super(message);
@@ -315,8 +283,6 @@ class ApiError extends Error {
 }
 global.ApiError = ApiError;
 
-// Global error handler
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const statusCode = err.statusCode || err.status || 500;
   let message = err.message || "Internal Server Error";
@@ -357,7 +323,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Graceful Shutdown
 const gracefulShutdown = async (signal, serverInstance) => {
   logger.info(`${signal} received. Initiating graceful shutdown...`);
   try {
@@ -366,8 +331,7 @@ const gracefulShutdown = async (signal, serverInstance) => {
         const timeout = setTimeout(() => {
           logger.warn("HTTP server close timed out. Forcing shutdown.");
           reject(new Error("Server close timeout"));
-        }, 10000); // 10 seconds timeout
-
+        }, 10000);
         serverInstance.close((err) => {
           clearTimeout(timeout);
           if (err) {
@@ -379,12 +343,10 @@ const gracefulShutdown = async (signal, serverInstance) => {
         });
       });
     }
-
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
       logger.info("MongoDB connection closed.");
     }
-
     if (
       global.whatsappServiceInstance &&
       typeof global.whatsappServiceInstance.gracefulShutdown === "function"

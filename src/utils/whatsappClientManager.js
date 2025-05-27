@@ -1,12 +1,12 @@
-//mcpclient/utils/whatsappClientManager.js
+// mcpclient/utils/whatsappClientManager.js
 import pkg from "whatsapp-web.js";
 import { MongoStore } from "wwebjs-mongo";
 import mongoose from "mongoose";
 import { initializeAI } from "../mcpClient.js";
-import SystemPrompt from "../models/systemPromptModel.js";
-import { systemPromptToNaturalLanguage } from "../utils/json2llm.js";
+import BotProfile from "../models/botProfileModel.js"; // Ensure this is used
+import { botProfileToNaturalLanguage } from "../utils/json2llm.js";
 import logger from "../utils/logger.js";
-import connectionPersistence from "./whatsappConnectionPersistence.js"; // For initial persistence
+import connectionPersistence from "./whatsappConnectionPersistence.js";
 
 const { Client, RemoteAuth } = pkg;
 
@@ -17,27 +17,13 @@ const PUPPETEER_CACHE_PATH =
 let mongoStoreInstance;
 let mongoStoreInitializationPromise = null;
 
-/**
- * Asynchronously gets or initializes the MongoStore instance.
- * Ensures that MongoStore is initialized only after a successful Mongoose connection.
- * @returns {Promise<MongoStore>} A promise that resolves with the MongoStore instance.
- */
 const getMongoStore = async () => {
-  if (mongoStoreInstance) {
-    return mongoStoreInstance;
-  }
-
-  if (mongoStoreInitializationPromise) {
-    return mongoStoreInitializationPromise;
-  }
+  if (mongoStoreInstance) return mongoStoreInstance;
+  if (mongoStoreInitializationPromise) return mongoStoreInitializationPromise;
 
   mongoStoreInitializationPromise = new Promise((resolve, reject) => {
     const checkConnection = () => {
       if (mongoose.connection.readyState === 1) {
-        // 1 === connected
-        logger.info(
-          "ClientManager: MongoDB connection is active. Initializing MongoStore."
-        );
         try {
           mongoStoreInstance = new MongoStore({ mongoose: mongoose });
           logger.info(
@@ -53,35 +39,23 @@ const getMongoStore = async () => {
         }
       } else {
         logger.warn(
-          "ClientManager: MongoDB connection not yet ready for MongoStore. Waiting..."
+          "ClientManager: MongoDB connection not ready for MongoStore. Waiting..."
         );
-        // Listen for 'connected' or 'error' events to avoid an infinite loop or long hangs
         const timeoutId = setTimeout(() => {
           mongoose.connection.off("connected", connectedListener);
           mongoose.connection.off("error", errorListener);
-          logger.error(
-            "ClientManager: Timeout waiting for MongoDB connection for MongoStore."
-          );
           reject(
             new Error("Timeout waiting for MongoDB connection for MongoStore.")
           );
-        }, 30000); // 30-second timeout
-
+        }, 30000);
         const connectedListener = () => {
           clearTimeout(timeoutId);
-          mongoose.connection.off("error", errorListener); // Clean up error listener
-          logger.info(
-            "ClientManager: MongoDB connected event received. Retrying MongoStore initialization."
-          );
-          checkConnection(); // Retry initialization
+          mongoose.connection.off("error", errorListener);
+          checkConnection();
         };
         const errorListener = (err) => {
           clearTimeout(timeoutId);
-          mongoose.connection.off("connected", connectedListener); // Clean up connected listener
-          logger.error(
-            { err },
-            "ClientManager: MongoDB connection error while waiting for MongoStore initialization."
-          );
+          mongoose.connection.off("connected", connectedListener);
           reject(err);
         };
         mongoose.connection.once("connected", connectedListener);
@@ -95,8 +69,8 @@ const getMongoStore = async () => {
 
 class WhatsAppClientManager {
   constructor(eventHandler) {
-    this.sessions = new Map(); // connectionName -> { client, status, qr, systemPromptName, ... }
-    this.eventHandler = eventHandler; // Instance of WhatsAppEventHandler
+    this.sessions = new Map();
+    this.eventHandler = eventHandler;
   }
 
   getSession(connectionName) {
@@ -109,10 +83,9 @@ class WhatsAppClientManager {
         client: null,
         status: "new",
         qr: null,
-        systemPromptName: null,
-        systemPromptId: null,
+        botProfileId: null, // Will be ObjectId
         aiInstance: null,
-        userId: null,
+        userId: null, // Will be ObjectId
         isReconnecting: false,
         reconnectAttempts: 0,
         ...defaults,
@@ -123,19 +96,19 @@ class WhatsAppClientManager {
 
   async createAndInitializeClient(
     connectionName,
-    systemPromptId, // Now expects ObjectId
-    userId, // Should be ObjectId
+    botProfileId, // ObjectId
+    userId, // ObjectId
     isRetry = false,
-    closeCallback // Function to call full session closure
+    closeCallback
   ) {
     logger.info(
-      `ClientManager: Initializing client for Conn: '${connectionName}', PromptId: '${systemPromptId}', User: '${userId}'${
+      `ClientManager: Initializing client for Conn: '${connectionName}', ProfileId: '${botProfileId}', User: '${userId}'${
         isRetry ? " (Retry)" : ""
       }`
     );
 
     const sessionEntry = this.getOrCreateSessionEntry(connectionName, {
-      systemPromptId,
+      botProfileId,
       userId,
       closeCallback,
     });
@@ -152,7 +125,7 @@ class WhatsAppClientManager {
       ].includes(sessionEntry.status)
     ) {
       logger.warn(
-        `ClientManager: Session '${connectionName}' client already exists or is being managed (Status: ${sessionEntry.status}).`
+        `ClientManager: Session '${connectionName}' client already managed (Status: ${sessionEntry.status}).`
       );
       throw new Error(
         `Session '${connectionName}' is already active or being initialized.`
@@ -168,41 +141,48 @@ class WhatsAppClientManager {
     }
 
     try {
-      // Always lookup by _id and userId
-      const systemPromptDoc = await SystemPrompt.findOne({
-        _id: systemPromptId,
-        userId,
-      });
-      if (!systemPromptDoc) {
-        // Check if prompt exists for any user (by _id)
-        const promptExists = await SystemPrompt.exists({ _id: systemPromptId });
-        const errorMsg = promptExists
-          ? `Access denied: You do not own system prompt with id '${systemPromptId}'.`
-          : `System prompt with id "${systemPromptId}" not found.`;
+      const botProfileDoc = await BotProfile.findOne({
+        _id: botProfileId,
+        userId: userId,
+        isEnabled: true,
+      }); // Check ownership and if enabled
+      if (!botProfileDoc) {
+        const profileExistsForUser = await BotProfile.exists({
+          _id: botProfileId,
+          userId: userId,
+        });
+        const profileExistsAnyUser = await BotProfile.exists({
+          _id: botProfileId,
+        });
+
+        let errorMsg = `Bot profile with ID "${botProfileId}" not found.`;
+        if (profileExistsAnyUser && !profileExistsForUser) {
+          errorMsg = `Access denied: You do not own bot profile with ID '${botProfileId}'.`;
+        } else if (
+          profileExistsForUser &&
+          !(await BotProfile.findOne({ _id: botProfileId, userId: userId }))
+            .isEnabled
+        ) {
+          errorMsg = `Bot profile with ID '${botProfileId}' is disabled.`;
+        }
         logger.error(`ClientManager: ${errorMsg} for user ${userId}`);
         throw new Error(errorMsg);
       }
+      // Store the actual name from the loaded document for logging/display
+      sessionEntry.botProfileName = botProfileDoc.name;
 
-      const aiInstance = await initializeAI(systemPromptId);
-      aiInstance.systemPromptText = systemPromptToNaturalLanguage(
-        systemPromptDoc.toObject()
+      const aiInstance = await initializeAI(botProfileDoc._id); // Use the actual _id
+      aiInstance.botProfileText = botProfileToNaturalLanguage(
+        botProfileDoc.toObject()
       );
 
-      // Crucially wait for MongoStore to be ready
-      logger.info(
-        `ClientManager: Attempting to get MongoStore for session ${connectionName}.`
-      );
       const store = await getMongoStore();
-      logger.info(
-        `ClientManager: MongoStore obtained for session ${connectionName}. Proceeding with client creation.`
-      );
-
       const client = new Client({
-        clientId: connectionName, // This is critical for RemoteAuth to identify the session
+        clientId: connectionName,
         authStrategy: new RemoteAuth({
-          store: store,
+          store,
           clientId: connectionName,
-          backupSyncIntervalMs: 300000, // e.g., 5 minutes, for syncing session state
+          backupSyncIntervalMs: 300000,
           dataPath: `${PUPPETEER_AUTH_PATH}/session-${connectionName}`,
         }),
         puppeteer: {
@@ -218,18 +198,15 @@ class WhatsAppClientManager {
             "--no-zygote",
           ],
         },
-        webVersion: "2.2409.2", // Pin version for stability
-        webVersionCache: {
-          type: "local",
-          path: PUPPETEER_CACHE_PATH, // Local cache for WhatsApp Web version
-        },
+        webVersion: "2.2409.2",
+        webVersionCache: { type: "local", path: PUPPETEER_CACHE_PATH },
       });
 
       sessionEntry.client = client;
       sessionEntry.status = "initializing";
-      sessionEntry.systemPromptId = systemPromptDoc._id;
+      sessionEntry.botProfileId = botProfileDoc._id; // Ensure it's the ObjectId
       sessionEntry.aiInstance = aiInstance;
-      sessionEntry.userId = userId;
+      sessionEntry.userId = userId; // Ensure it's the ObjectId
       sessionEntry.isReconnecting = isRetry;
       sessionEntry.reconnectAttempts = isRetry
         ? (sessionEntry.reconnectAttempts || 0) +
@@ -240,7 +217,7 @@ class WhatsAppClientManager {
       if (!isRetry) {
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptId, // Save the id
+          botProfileDoc._id,
           userId,
           "initializing",
           true
@@ -248,47 +225,46 @@ class WhatsAppClientManager {
       }
 
       this.eventHandler.registerEventHandlers(client, connectionName);
+      await client.initialize();
 
-      logger.info(
-        `ClientManager: Starting WhatsApp client.initialize() for '${connectionName}'...`
-      );
-      await client.initialize(); // This can take time and is where RemoteAuth tries to load the session
-      logger.info(
-        `ClientManager: client.initialize() completed for '${connectionName}'. Status updates via events.`
-      );
-
-      // Extract phone number after successful initialization
-      let phoneNumber = null;
-      if (client.info && client.info.wid && client.info.wid.user) {
-        phoneNumber = client.info.wid.user;
+      let phoneNumber = client.info?.wid?.user || null;
+      if (phoneNumber) {
         logger.info(
           `ClientManager: Phone number for ${connectionName} is ${phoneNumber}`
         );
-        // Persist phone number in DB
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptId,
+          botProfileDoc._id,
           userId,
-          "connected",
+          sessionEntry.status,
           true,
           new Date(),
           phoneNumber
         );
       }
 
-      if (isRetry) {
-        logger.info(
-          `ClientManager: client.initialize() succeeded for retry of ${connectionName}.`
-        );
-      }
-
       return client;
     } catch (error) {
       logger.error(
-        { err: error, connectionName, userId, isRetry },
-        `ClientManager: Error in createAndInitializeClient for '${connectionName}'`
+        {
+          err: error,
+          connectionName,
+          botProfileIdFromArg: botProfileId,
+          userId,
+          isRetry,
+        },
+        `ClientManager: Error in createAndInitializeClient`
       );
       sessionEntry.status = "init_failed";
+      const isAuthRelatedError =
+        error.message.toLowerCase().includes("auth") ||
+        error.message.toLowerCase().includes("qr");
+      const shouldDisableReconnect =
+        isAuthRelatedError ||
+        error.message.includes("Access denied") ||
+        error.message.includes("not found") ||
+        error.message.includes("disabled");
+
       if (!isRetry || !sessionEntry.isReconnecting) {
         await this.cleanupClientResources(
           connectionName,
@@ -296,14 +272,14 @@ class WhatsAppClientManager {
         );
         await connectionPersistence.saveConnectionDetails(
           connectionName,
-          systemPromptId,
+          botProfileId,
           userId,
           `init_failed: ${error.message.substring(0, 50)}`,
-          false
+          !shouldDisableReconnect
         );
       } else if (isRetry && sessionEntry.isReconnecting) {
         logger.warn(
-          `ClientManager: Initialize failed during reconnect for ${connectionName}. Attempt ${sessionEntry.reconnectAttempts}. EventHandler manages further retries.`
+          `ClientManager: Initialize failed during reconnect for ${connectionName}. Attempt ${sessionEntry.reconnectAttempts}.`
         );
       }
       throw error;
@@ -314,11 +290,8 @@ class WhatsAppClientManager {
     const session = this.sessions.get(connectionName);
     if (session) {
       if (session.client) {
-        if (isPuppeteerTimeout) {
-          logger.warn(
-            `ClientManager: Puppeteer timeout for ${connectionName}, client.destroy() skipped.`
-          );
-        } else {
+        if (!isPuppeteerTimeout) {
+          // Only destroy if not a puppeteer timeout
           try {
             await session.client.destroy();
             logger.info(
@@ -330,6 +303,10 @@ class WhatsAppClientManager {
               `ClientManager: Error destroying client.`
             );
           }
+        } else {
+          logger.warn(
+            `ClientManager: Puppeteer timeout for ${connectionName}, client.destroy() skipped to avoid hangs.`
+          );
         }
         session.client = null;
       }
@@ -346,9 +323,6 @@ class WhatsAppClientManager {
           );
         }
       }
-      logger.info(
-        `ClientManager: Client resources cleaned for ${connectionName}. In-memory session status: ${session.status}`
-      );
     }
   }
 
@@ -366,11 +340,7 @@ class WhatsAppClientManager {
     forceClose = false,
     calledFromAuthFailure = false
   ) {
-    logger.info(
-      `ClientManager: Destroying client for connection: '${connectionName}'. Force: ${forceClose}`
-    );
     const session = this.sessions.get(connectionName);
-
     if (session) {
       session.isReconnecting = false;
       const finalStatus = forceClose
@@ -382,9 +352,6 @@ class WhatsAppClientManager {
       await this.cleanupClientResources(connectionName, false);
       return finalStatus;
     }
-    logger.warn(
-      `ClientManager: Attempted to destroy client for non-existent session '${connectionName}'.`
-    );
     return "not_found";
   }
 }

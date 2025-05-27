@@ -1,17 +1,22 @@
-// mcpclient/routes/botProfileRoute.js
+// src\routes\botProfileRoute.js
 import express from "express";
-import { body, param, query, validationResult } from "express-validator";
+import { body, param, validationResult } from "express-validator";
 import botProfileController from "../controllers/botProfileController.js";
-import logger from "../utils/logger.js"; // Assuming logger path
+import logger from "../utils/logger.js";
 
 const router = express.Router();
 
-// Middleware to handle validation results
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
+    // Log the body as well for validation errors to understand what was sent
     logger.warn(
-      { errors: errors.array(), path: req.path, userId: req.user?._id },
+      {
+        errors: errors.array(),
+        path: req.path,
+        userId: req.user?._id,
+        body: req.body,
+      },
       "Validation failed for bot profile route."
     );
     return res.status(400).json({ errors: errors.array() });
@@ -19,116 +24,232 @@ const validate = (req, res, next) => {
   next();
 };
 
-// --- Define Validation Chains ---
-// LBA/SSE: Using express-validator for robust input validation and sanitization.
+// --- Validation Chains (Following BotProfileSchema) ---
+const nameValidation = () =>
+  body("name")
+    .trim()
+    .isString()
+    .withMessage("Name must be a string.")
+    .isLength({ min: 3, max: 100 })
+    .withMessage("Name must be between 3 and 100 characters.");
 
-const nameValidation = body("name")
-  .trim()
-  .isString()
-  .withMessage("Name must be a string.")
-  .isLength({ min: 3, max: 100 })
-  .withMessage("Name must be between 3 and 100 characters.");
-// .escape() // Escape to prevent XSS if name is directly rendered in HTML without proper templating. Be cautious if names need special chars.
+const descriptionValidation = () =>
+  body("description")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .withMessage("Description must be a string.")
+    .isLength({ max: 500 })
+    .withMessage("Description cannot exceed 500 characters.");
 
-const descriptionValidation = body("description")
-  .optional()
-  .trim()
-  .isString()
-  .withMessage("Description must be a string.")
-  .isLength({ max: 500 })
-  .withMessage("Description cannot exceed 500 characters.");
-// .escape();
+const identityValidation = () =>
+  body("identity")
+    .trim()
+    .isString()
+    .withMessage("Identity must be a string.")
+    .notEmpty()
+    .withMessage("Identity is required.");
 
-const identityValidation = body("identity")
-  .trim()
-  .isString()
-  .withMessage("Identity must be a string.")
-  .isLength({ min: 1 }) // Must not be empty
-  .withMessage("Identity is required.");
-// .escape();
+const communicationStyleValidation = () =>
+  body("communicationStyle")
+    .optional()
+    .trim()
+    .isIn(["Formal", "Friendly", "Humorous", "Professional", "Custom"])
+    .withMessage("Invalid communication style.");
 
-const communicationStyleValidation = body("communicationStyle")
-  .optional()
-  .trim()
-  .isIn(["Formal", "Friendly", "Humorous", "Professional", "Custom"])
-  .withMessage("Invalid communication style.");
-
-// Basic validation for array of strings
-const arrayOfStringValidation = (fieldName) =>
+const stringArrayValidation = (fieldName, itemMaxLength = 500) =>
   body(fieldName)
     .optional()
     .isArray()
     .withMessage(`${fieldName} must be an array.`)
     .custom((arr) =>
-      arr.every((item) => typeof item === "string" && item.trim().length > 0)
+      arr.every(
+        (item) =>
+          typeof item === "string" &&
+          item.trim().length > 0 &&
+          item.length <= itemMaxLength
+      )
     )
-    .withMessage(`All items in ${fieldName} must be non-empty strings.`);
-
-// More detailed validation for complex arrays if needed (example for knowledgeBaseItems)
-const knowledgeBaseItemsValidation = body("knowledgeBaseItems")
-  .optional()
-  .isArray()
-  .withMessage("Knowledge base items must be an array.")
-  .custom((items) => {
-    if (!items) return true; // Optional array
-    return items.every(
-      (item) =>
-        typeof item === "object" &&
-        item !== null &&
-        typeof item.topic === "string" &&
-        item.topic.trim() !== "" &&
-        typeof item.content === "string" &&
-        item.content.trim() !== ""
+    .withMessage(
+      `All items in ${fieldName} must be non-empty strings (max ${itemMaxLength} chars).`
     );
-  })
-  .withMessage(
-    "Each knowledge base item must have a non-empty 'topic' and 'content'."
-  );
 
-// Similar detailed validations can be created for mcpServers, exampleResponses, etc.
-// For brevity, we'll use simpler ones or rely on Mongoose schema validation for deep array contents.
+const knowledgeBaseItemsValidation = () =>
+  body("knowledgeBaseItems")
+    .optional()
+    .isArray()
+    .withMessage("Knowledge base items must be an array.")
+    .custom((items) => {
+      if (!items) return true;
+      return items.every(
+        (item) =>
+          item &&
+          typeof item === "object" &&
+          typeof item.topic === "string" &&
+          item.topic.trim() !== "" &&
+          item.topic.length <= 200 &&
+          typeof item.content === "string" &&
+          item.content.trim() !== "" &&
+          item.content.length <= 2000
+      );
+    })
+    .withMessage(
+      "Each knowledge item must have non-empty 'topic' (max 200 chars) and 'content' (max 2000 chars)."
+    );
+
+const exampleResponsesValidation = () =>
+  body("exampleResponses")
+    .optional()
+    .isArray()
+    .withMessage("Example responses must be an array.")
+    .custom(
+      (items) =>
+        !items ||
+        items.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            (item.scenario === undefined ||
+              (typeof item.scenario === "string" &&
+                item.scenario.length <= 1000)) && // Allow undefined if not required by schema
+            (item.response === undefined ||
+              (typeof item.response === "string" &&
+                item.response.length <= 2000))
+        )
+    )
+    .withMessage(
+      "Each example response, if provided, must have 'scenario' (max 1000 chars) and 'response' (max 2000 chars)."
+    );
+
+const edgeCasesValidation = () =>
+  body("edgeCases")
+    .optional()
+    .isArray()
+    .withMessage("Edge cases must be an array.")
+    .custom(
+      (items) =>
+        !items ||
+        items.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            (item.case === undefined ||
+              (typeof item.case === "string" && item.case.length <= 1000)) &&
+            (item.action === undefined ||
+              (typeof item.action === "string" && item.action.length <= 1000))
+        )
+    )
+    .withMessage(
+      "Each edge case, if provided, must have 'case' (max 1000 chars) and 'action' (max 1000 chars)."
+    );
+
+const mcpServersValidation = () =>
+  body("mcpServers")
+    .optional()
+    .isArray()
+    .withMessage("MCP Servers must be an array.")
+    .custom(
+      (items) =>
+        !items ||
+        items.every(
+          (item) =>
+            item &&
+            typeof item === "object" &&
+            typeof item.name === "string" &&
+            item.name.trim() !== "" &&
+            typeof item.command === "string" &&
+            item.command.trim() !== "" &&
+            (item.args === undefined ||
+              (Array.isArray(item.args) &&
+                item.args.every((arg) => typeof arg === "string"))) &&
+            (item.enabled === undefined || typeof item.enabled === "boolean") // allow undefined to use schema default
+        )
+    )
+    .withMessage(
+      "Each MCP Server must have valid 'name', 'command'. 'args' (array of strings), and 'enabled' (boolean) are optional."
+    );
 
 const createProfileValidations = [
-  nameValidation,
-  descriptionValidation,
-  identityValidation,
-  communicationStyleValidation,
-  body("primaryLanguage").optional().trim().isString(),
-  body("secondaryLanguage").optional().trim().isString(),
-  arrayOfStringValidation("languageRules"),
-  knowledgeBaseItemsValidation, // Example of more detailed array validation
-  arrayOfStringValidation("tags"),
-  arrayOfStringValidation("initialInteraction"),
-  arrayOfStringValidation("interactionGuidelines"),
-  // Add more for exampleResponses, edgeCases, tools, privacyAndComplianceGuidelines, mcpServers
+  nameValidation(),
+  descriptionValidation(),
+  identityValidation(),
+  communicationStyleValidation(),
+  body("primaryLanguage")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ min: 2, max: 10 }),
+  body("secondaryLanguage")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ min: 2, max: 10 }),
+  stringArrayValidation("languageRules", 1000), // Example item max length
+  knowledgeBaseItemsValidation(),
+  stringArrayValidation("tags", 100),
+  stringArrayValidation("initialInteraction", 1000),
+  stringArrayValidation("interactionGuidelines", 2000),
+  exampleResponsesValidation(),
+  edgeCasesValidation(),
+  body("tools.name")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 100 }),
+  body("tools.description")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 500 }),
+  stringArrayValidation("tools.purposes", 200),
+  body("privacyAndComplianceGuidelines")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 5000 }),
+  mcpServersValidation(),
   body("isEnabled").optional().isBoolean().toBoolean(),
-  body("isPubliclyListed").optional().isBoolean().toBoolean(),
 ];
 
-// For updates, most fields are optional. Name is disallowed from changing via controller logic.
 const updateProfileValidations = [
-  // param("id").isMongoId().withMessage("Invalid Profile ID format."), // If updating by ID in URL
-  param("name")
-    .if(
-      (value, { req }) =>
-        req.method === "PUT" && req.originalUrl.includes("/byName/")
-    ) // If updating by name in URL
+  descriptionValidation(),
+  identityValidation().optional(),
+  communicationStyleValidation(),
+  body("primaryLanguage")
+    .optional({ checkFalsy: true })
     .trim()
-    .notEmpty()
-    .withMessage("Profile name in URL cannot be empty."),
-  descriptionValidation,
-  identityValidation.optional(), // Make identity optional for PUT if not all fields required
-  communicationStyleValidation,
-  body("primaryLanguage").optional().trim().isString(),
-  body("secondaryLanguage").optional().trim().isString(),
-  arrayOfStringValidation("languageRules"),
-  knowledgeBaseItemsValidation,
-  arrayOfStringValidation("tags"),
-  arrayOfStringValidation("initialInteraction"),
-  arrayOfStringValidation("interactionGuidelines"),
+    .isString()
+    .isLength({ min: 2, max: 10 }),
+  body("secondaryLanguage")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ min: 2, max: 10 }),
+  stringArrayValidation("languageRules", 1000),
+  knowledgeBaseItemsValidation(),
+  stringArrayValidation("tags", 100),
+  stringArrayValidation("initialInteraction", 1000),
+  stringArrayValidation("interactionGuidelines", 2000),
+  exampleResponsesValidation(),
+  edgeCasesValidation(),
+  body("tools.name")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 100 }),
+  body("tools.description")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 500 }),
+  stringArrayValidation("tools.purposes", 200),
+  body("privacyAndComplianceGuidelines")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString()
+    .isLength({ max: 5000 }),
+  mcpServersValidation(),
   body("isEnabled").optional().isBoolean().toBoolean(),
-  body("isPubliclyListed").optional().isBoolean().toBoolean(),
-  // Ensure no 'name', 'userId', '_id' fields are in the body for update in a way that bypasses controller logic.
   body("name")
     .not()
     .exists()
@@ -140,143 +261,26 @@ const updateProfileValidations = [
     .withMessage("Profile ID cannot be changed via payload."),
 ];
 
-// For updates by ID, do not include param('name') validator
-const updateProfileValidationsById = updateProfileValidations.filter(
-  (v) =>
-    !(
-      v &&
-      v.builder &&
-      v.builder.fields &&
-      v.builder.fields[0] === "name" &&
-      v.builder.locations &&
-      v.builder.locations.includes("params")
-    )
-);
+// Routes
+router.get("/", botProfileController.getAllProfilesForUser);
 
-// --- Routes ---
-
-/**
- * @openapi
- * /api/botprofile/user/{userId}:
- *   get:
- *     summary: Get all bot profiles for a specific user (typically the authenticated user).
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     parameters:
- *       - in: path
- *         name: userId
- *         required: true
- *         schema:
- *           type: string
- *         description: The user ID (note middleware scopes this to authenticated user).
- *     responses:
- *       200:
- *         description: A list of bot profiles.
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/BotProfile' # Simplified version for list
- *       401:
- *         description: Unauthorized.
- *       500:
- *         description: Server error.
- */
-// Note: The :userId param here is a bit redundant if `requireAuth` always scopes to `req.user._id`.
-// The controller `getAllProfilesForUser` already uses `req.user._id`.
-// We can simplify the route to just `/api/botprofile/mine` or `/api/botprofile/`
-router.get("/", botProfileController.getAllProfilesForUser); // Changed from /user/:userId
-
-/**
- * @openapi
- * /api/botprofile/byName/{name}:
- *   get:
- *     summary: Get a bot profile by its name (scoped to authenticated user).
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     parameters:
- *       - in: path
- *         name: name
- *         required: true
- *         schema:
- *           type: string
- *         description: The name of the bot profile.
- *     responses:
- *       200:
- *         description: The requested bot profile.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BotProfile'
- *       401:
- *         description: Unauthorized.
- *       404:
- *         description: Bot profile not found.
- *       500:
- *         description: Server error.
- */
 router.get(
   "/byName/:name",
-  param("name").trim().notEmpty().withMessage("Profile name cannot be empty."),
+  param("name")
+    .trim()
+    .notEmpty()
+    .withMessage("Profile name parameter cannot be empty."),
   validate,
   botProfileController.getProfileByName
 );
 
-/**
- * @openapi
- * /api/botprofile/{id}:
- *   get:
- *     summary: Get a bot profile by its ID (scoped to authenticated user).
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *           format: ObjectId
- *         description: The ID of the bot profile.
- *     responses:
- *       // ... similar to byName
- */
 router.get(
   "/:id",
-  param("id").isMongoId().withMessage("Invalid Profile ID format."),
+  param("id").isMongoId().withMessage("Invalid Profile ID format in URL."),
   validate,
   botProfileController.getProfileById
 );
 
-/**
- * @openapi
- * /api/botprofile:
- *   post:
- *     summary: Create a new bot profile.
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/BotProfile' # Input schema might be slightly different (e.g., no _id)
- *     responses:
- *       201:
- *         description: Bot profile created successfully.
- *       400:
- *         description: Validation error.
- *       401:
- *         description: Unauthorized.
- *       409:
- *         description: Conflict (e.g., name already exists for user).
- *       500:
- *         description: Server error.
- */
 router.post(
   "/",
   createProfileValidations,
@@ -284,56 +288,17 @@ router.post(
   botProfileController.createProfile
 );
 
-/**
- * @openapi
- * /api/botprofile/{id}:
- *   put:
- *     summary: Update an existing bot profile by ID.
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *           format: ObjectId
- *     requestBody:
- *       // ... schema for updatable fields
- *     responses:
- *       // ...
- */
-// LBA: Standardizing on ID for updates and deletes is generally more robust than name.
-// router.put(
-//   "/:id",
-//   param("id").isMongoId().withMessage("Invalid Profile ID format."),
-//   ...updateProfileValidationsById,
-//   validate,
-//   botProfileController.updateProfileById
-// );
+router.put(
+  "/:id",
+  param("id").isMongoId().withMessage("Invalid Profile ID format in URL."),
+  updateProfileValidations,
+  validate,
+  botProfileController.updateProfileById
+);
 
-/**
- * @openapi
- * /api/botprofile/{id}:
- *   delete:
- *     summary: Delete a bot profile by ID.
- *     tags: [BotProfile]
- *     security:
- *       - cookieAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *           format: ObjectId
- *     responses:
- *       // ...
- */
 router.delete(
   "/:id",
-  param("id").isMongoId().withMessage("Invalid Profile ID format."),
+  param("id").isMongoId().withMessage("Invalid Profile ID format in URL."),
   validate,
   botProfileController.deleteProfileById
 );
