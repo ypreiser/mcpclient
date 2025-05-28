@@ -1,10 +1,11 @@
-// mcpclient/utils/whatsappMessageProcessor.js
+// src\utils\whatsappMessageProcessor.js
 import Chat from "../models/chatModel.js";
 import User from "../models/userModel.js"; // For logging token usage to User
 import TokenUsageRecord from "../models/tokenUsageRecordModel.js";
 import BotProfile from "../models/botProfileModel.js"; // For logging token usage to BotProfile
 import logger from "../utils/logger.js";
 import { v2 as cloudinary } from "cloudinary";
+import { generateText } from "ai"; // Import the AI SDK function directly
 // Assuming initializeAI is passed in constructor from whatsappService
 
 // Cloudinary config (ensure these env vars are set)

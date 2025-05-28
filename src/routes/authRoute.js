@@ -1,3 +1,4 @@
+// src\routes\authRoute.js
 //mcpclient/routes/authRoute.js
 import express from "express";
 import bcrypt from "bcryptjs";

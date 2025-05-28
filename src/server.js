@@ -121,6 +121,8 @@ app.use((req, res, next) => {
     path: req.path,
     ip: req.ip,
     userAgent: req.headers["user-agent"],
+    userId: req.user ? req.user._id : "no user id",
+    cookies: req.cookies || "no cookies",
   };
 
   if (

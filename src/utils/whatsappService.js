@@ -1,4 +1,4 @@
-// src\utils\whatsappService.js
+// mcpclient/utils/whatsappService.js
 import mongoose from "mongoose";
 import logger from "../utils/logger.js";
 import WhatsAppClientManager from "./whatsappClientManager.js";
@@ -6,8 +6,9 @@ import WhatsAppEventHandler from "./whatsappEventHandler.js";
 import WhatsAppMessageProcessor from "./whatsappMessageProcessor.js";
 import connectionPersistence from "./whatsappConnectionPersistence.js";
 import { initializeAI as initializeAIService } from "../mcpClient.js";
-import BotProfile from "../models/botProfileModel.js"; // For fetching botProfileName if needed
-import WhatsAppConnection from "../models/whatsAppConnectionModel.js"; // For fetching connection if details missing
+// BotProfile and WhatsAppConnection models are used by persistence layer, not directly here typically
+// import BotProfile from "../models/botProfileModel.js";
+import WhatsAppConnection from "../models/whatsAppConnectionModel.js";
 
 class WhatsAppService {
   constructor() {
@@ -29,7 +30,12 @@ class WhatsAppService {
     userId,
     isRetry = false
   ) {
-    // ... (initial checks remain the same) ...
+    if (this.isShuttingDown) {
+      logger.warn(
+        `WhatsAppService: Shutdown in progress. Cannot initialize session ${connectionName}.`
+      );
+      throw new Error("Service is shutting down.");
+    }
     logger.info(
       `WhatsAppService: Orchestrating session initialization for Conn: '${connectionName}', ProfileId: '${botProfileId}', User: '${userId}'${
         isRetry ? " (Retry)" : ""
@@ -37,18 +43,32 @@ class WhatsAppService {
     );
 
     try {
-      // ... (closeCallback definition) ...
+      // Define closeCallback here so it's in scope
+      const closeCallback = async (force = false, fromAuthFail = false) => {
+        // This `this` will correctly refer to the WhatsAppService instance
+        // because initializeSession is an async method of the class.
+        // If it were a standalone function, `this` would be different.
+        return this.closeSession(connectionName, force, fromAuthFail);
+      };
+
       await this.clientManager.createAndInitializeClient(
         connectionName,
         botProfileId,
         userId,
         isRetry,
-        closeCallback
+        closeCallback // Now correctly passing the defined function
       );
-      // ...
+      logger.info(
+        `WhatsAppService: Session client initialization process initiated for ${connectionName}.`
+      );
+      // Status will be updated by event handlers.
     } catch (error) {
-      // ... (error logging) ...
-      throw error;
+      logger.error(
+        { err: error, connectionName, botProfileId, userId },
+        `WhatsAppService: Error during session initialization orchestration for ${connectionName}.`
+      );
+      // The clientManager and persistence layers should handle detailed error state updates.
+      throw error; // Re-throw for the caller (e.g., API route)
     }
   }
 
@@ -58,14 +78,8 @@ class WhatsAppService {
       logger.warn(
         `WhatsAppService: getQRCode for non-existent in-memory session: '${connectionName}'.`
       );
-      // If no in-memory session, there's no live QR code.
-      // Checking DB for 'qr_pending_scan' is informative but doesn't yield a QR.
-      // const dbConn = await connectionPersistence.getByConnectionName(connectionName, SOME_USER_ID_IF_KNOWN_CONTEXT);
-      // This needs userId if getByConnectionName is strictly scoped.
-      // For QR, it's usually for a connection that *is* being actively set up by a user.
       return null;
     }
-    // ... (rest of QR logic remains same) ...
     if (session.status !== "qr_ready" || !session.qr) {
       logger.warn(
         `WhatsAppService: QR code not ready/invalid for '${connectionName}'. Status: ${session.status}.`
@@ -76,9 +90,7 @@ class WhatsAppService {
   }
 
   async getStatus(connectionName, userId) {
-    // ADDED userId for DB lookup if session not in memory
     const session = this.clientManager.getSession(connectionName);
-    // Check if the in-memory session belongs to the requesting user
     if (
       session &&
       session.userId &&
@@ -87,13 +99,14 @@ class WhatsAppService {
     ) {
       return session.status;
     }
-    // If no in-memory session for this user, or it's 'new', check DB
     if (!userId) {
-      // Should not happen if called from an authenticated route
       logger.warn(
         `WhatsAppService: getStatus called for ${connectionName} without userId for DB lookup.`
       );
-      return "not_found"; // Or some other appropriate status
+      // Check if a public session by this name exists if no userId (less common for WA)
+      const publicSession = this.clientManager.getSession(connectionName);
+      if (publicSession && !publicSession.userId) return publicSession.status; // E.g. a global, non-user-specific bot
+      return "not_found";
     }
     const dbConn = await connectionPersistence.getByConnectionName(
       connectionName,
@@ -103,9 +116,7 @@ class WhatsAppService {
   }
 
   async sendMessage(connectionName, userId, to, messageText) {
-    // ADDED userId
     const session = this.clientManager.getSession(connectionName);
-    // Crucially, verify that the session belongs to the user attempting to send the message
     if (
       !session ||
       !session.client ||
@@ -123,7 +134,6 @@ class WhatsAppService {
         `WhatsApp client for '${connectionName}' is not ready for your account (Status: ${currentStatus}). Cannot send message.`
       );
     }
-    // ... (rest of sendMessage logic) ...
     logger.info(
       { connectionName, to, userId },
       `WhatsAppService: Sending message via '${connectionName}'.`
@@ -132,7 +142,6 @@ class WhatsAppService {
   }
 
   async closeSession(
-    userId,
     connectionName,
     forceClose = false,
     calledFromAuthFailure = false
@@ -144,44 +153,35 @@ class WhatsAppService {
 
     let originalBotProfileId = session?.botProfileId;
     let originalUserId = session?.userId;
-    if (userId != originalUserId) {
-      logger.warn(
-        `WhatsAppService: User ID mismatch for session '${connectionName}'. Expected: ${originalUserId}, Provided: ${userId}.`
-      );
-      return false; // User ID mismatch, cannot proceed
-    }
 
     if (!session && !calledFromAuthFailure) {
-      // If we need to fetch from DB, we MUST have a userId context for getByConnectionName
-      // This part is tricky if closeSession is called without a specific user context (e.g., admin action).
-      // For user-initiated close, req.user._id would be the userId.
-      // Let's assume for now this method is called in a context where `originalUserId` can be determined
-      // or the operation is more about the connection name itself regardless of user if it's a cleanup.
-      // This implies `getByConnectionName` might need to be less strict or we need different close strategies.
-      // For now, if we can't get originalUserId here, persistence might be partial.
       if (originalUserId) {
-        // Only query DB if we know which user's connection to look for
         const dbConn = await connectionPersistence.getByConnectionName(
           connectionName,
           originalUserId
         );
         if (dbConn) {
           originalBotProfileId = dbConn.botProfileId;
-          // originalUserId is already set
         } else {
           logger.warn(
             `WhatsAppService: No DB record found for ${connectionName} for user ${originalUserId} during close.`
           );
-          // If no session and no DB record, effectively nothing to close from persistence.
         }
-      } else if (!calledFromAuthFailure) {
+      } else {
+        // If calledFromAuthFailure, session might be partially set up or gone.
+        // If not auth failure and no session AND no originalUserId context, it's hard to know which DB record to update.
+        // We might need to find the connection by name if it's truly a global admin action without user context.
+        // For now, this implies that if session doesn't exist AND it's not an auth failure, we need a userId context.
+        // The route calling closeSession should provide this if it's a user action.
         logger.warn(
-          `WhatsAppService: Cannot reliably fetch DB details for ${connectionName} to close without userId context.`
+          `WhatsAppService: Cannot reliably fetch DB details for ${connectionName} to close without userId context or active session.`
         );
+        // If we *must* close a connection by name without knowing the user (admin action),
+        // we'd need a different DB query. For now, assuming user context or session exists.
       }
     } else if (session) {
       session.isReconnecting = false;
-      originalUserId = session.userId; // Ensure originalUserId is from the live session if it exists
+      originalUserId = session.userId;
       originalBotProfileId = session.botProfileId;
     }
 
@@ -191,7 +191,6 @@ class WhatsAppService {
       calledFromAuthFailure
     );
 
-    // Only attempt to save connection details if we have the necessary IDs
     if (originalBotProfileId && originalUserId) {
       await connectionPersistence.saveConnectionDetails(
         connectionName,
@@ -207,13 +206,12 @@ class WhatsAppService {
       finalStatus !== "not_found" &&
       originalUserId
     ) {
-      // If we have userId, we can at least update status
       logger.warn(
         `WhatsAppService: Closing session ${connectionName} for user ${originalUserId} with possibly incomplete botProfileId. Persisting closure status.`
       );
       await connectionPersistence.updateConnectionStatus(
         connectionName,
-        originalUserId,
+        originalUserId, // Pass userId here
         finalStatus === "not_found" && calledFromAuthFailure
           ? "auth_failed"
           : finalStatus,
@@ -233,26 +231,56 @@ class WhatsAppService {
   }
 
   async loadAndReconnectPersistedSessions() {
-    // ... (initial log) ...
+    if (this.isShuttingDown) return;
+    logger.info(
+      "WhatsAppService: Loading and attempting to reconnect persisted sessions..."
+    );
     try {
       const connectionsToReconnect =
         await connectionPersistence.getConnectionsToReconnect();
-      // ... (check length) ...
+      if (connectionsToReconnect.length === 0) {
+        logger.info(
+          "WhatsAppService: No persisted sessions for auto-reconnection."
+        );
+        return;
+      }
+      logger.info(
+        `WhatsAppService: Found ${connectionsToReconnect.length} sessions to attempt reconnection.`
+      );
+
       for (const conn of connectionsToReconnect) {
-        // conn already includes botProfileId and userId from the modified getConnectionsToReconnect
         if (!conn.userId || !conn.botProfileId) {
           logger.error(
-            { connection: conn },
+            { connectionName: conn.connectionName },
             "WhatsAppService: Persisted connection missing critical userId or botProfileId. Cannot reconnect."
           );
           continue;
         }
-        // ... (skip if already managed logic) ...
+
+        const existingSession = this.clientManager.getSession(
+          conn.connectionName
+        );
+        if (
+          existingSession &&
+          existingSession.userId &&
+          existingSession.userId.toString() === conn.userId.toString() &&
+          [
+            "connected",
+            "authenticated",
+            "reconnecting",
+            "initializing",
+            "qr_ready",
+          ].includes(existingSession.status)
+        ) {
+          logger.warn(
+            `WhatsAppService: Session ${conn.connectionName} (User: ${conn.userId}) already managed. Skipping auto-reconnect.`
+          );
+          continue;
+        }
         logger.info(
           `WhatsAppService: Attempting auto-reconnect for: ${conn.connectionName} with BotProfileID: ${conn.botProfileId} for UserID: ${conn.userId}`
         );
         try {
-          // Pass userId to updateLastAttemptedReconnect
           await connectionPersistence.updateLastAttemptedReconnect(
             conn.connectionName,
             conn.userId
@@ -261,10 +289,17 @@ class WhatsAppService {
             conn.connectionName,
             conn.botProfileId,
             conn.userId,
-            false
-          );
+            true
+          ); // isRetry = true for startup reconnects
         } catch (initError) {
-          // ... (error logging, ensure updateConnectionStatus also gets userId) ...
+          logger.error(
+            {
+              err: initError,
+              connectionName: conn.connectionName,
+              userId: conn.userId,
+            },
+            `WhatsAppService: Failed to auto-reinitialize ${conn.connectionName} on startup.`
+          );
           const isAuthError =
             initError.message.toLowerCase().includes("auth") ||
             initError.message.toLowerCase().includes("qr") ||
@@ -288,10 +323,24 @@ class WhatsAppService {
     }
   }
 
-  // ... (gracefulShutdown remains the same) ...
+  async gracefulShutdown() {
+    this.isShuttingDown = true;
+    logger.info("WhatsAppService: Starting graceful shutdown...");
+    const activeSessions = Array.from(this.clientManager.sessions.keys());
+    if (activeSessions.length > 0) {
+      logger.info(
+        `WhatsAppService: Closing ${activeSessions.length} active session(s)...`
+      );
+      await Promise.all(
+        activeSessions.map((connectionName) =>
+          this.closeSession(connectionName, false)
+        )
+      );
+    }
+    logger.info("WhatsAppService: Graceful shutdown completed.");
+  }
 }
 
-// ... (instance creation and export remain the same) ...
 const whatsappServiceInstance = new WhatsAppService();
 
 setImmediate(async () => {
