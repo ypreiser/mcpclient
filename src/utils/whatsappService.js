@@ -1,4 +1,4 @@
-// mcpclient/utils/whatsappService.js
+// src\utils\whatsappService.js
 import mongoose from "mongoose";
 import logger from "../utils/logger.js";
 import WhatsAppClientManager from "./whatsappClientManager.js";
