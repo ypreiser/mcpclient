@@ -16,7 +16,6 @@ export default defineConfig({
         "vitest.config.js",
         "coverage/",
         "server.js", // Often, the main server entry point is lightly tested via integration tests
-        "models/", // Models are typically tested indirectly via service/route tests
         "utils/logger.js", // Logger is hard to unit test effectively without complexity
       ],
     },
