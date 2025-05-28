@@ -127,7 +127,7 @@ describe("initializeAI", () => {
 
     expect(aiInstance.mcpClients.server1).toBe(mockMcpClient1);
     expect(aiInstance.tools).toEqual({ toolA: "defA", toolC: "defC" });
-    expect(aiInstance.systemPromptText).toBe(mockSystemPrompt);
+    expect(aiInstance.botProfileText).toBe(mockSystemPrompt);
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ botProfileId: mockBotProfileId }),
       "Initializing AI services for bot profile ID."
