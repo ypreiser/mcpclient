@@ -1,3 +1,4 @@
+// src\utils\uploadMiddleware.js
 //mcpclient/utils/uploadMiddleware.js
 
 import multer from "multer";
@@ -70,3 +71,4 @@ const upload = multer({
 });
 
 export default upload;
+export { getStorageProvider, fileFilter };
