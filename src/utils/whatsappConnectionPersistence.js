@@ -1,4 +1,4 @@
-// mcpclient/utils/whatsappConnectionPersistence.js
+// src\utils\whatsappConnectionPersistence.js
 import WhatsAppConnection from "../models/whatsAppConnectionModel.js";
 import logger from "../utils/logger.js";
 

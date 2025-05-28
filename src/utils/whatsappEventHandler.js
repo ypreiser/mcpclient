@@ -1,4 +1,4 @@
-// mcpclient/utils/whatsappEventHandler.js
+// src\utils\whatsappEventHandler.js
 import logger from "../utils/logger.js";
 import connectionPersistence from "./whatsappConnectionPersistence.js";
 
