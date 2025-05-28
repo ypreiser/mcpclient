@@ -56,7 +56,7 @@ const processMessage = async (
 
   const { aiInstance, botProfileId, botProfileName } = session;
   // Destructure AI instance properties, NOT including generateText
-  const { tools, google, GEMINI_MODEL_NAME, systemPromptText } = aiInstance; // <<< generateText REMOVED from here
+  const { tools, google, GEMINI_MODEL_NAME, botProfileText } = aiInstance; // <<< generateText REMOVED from here
 
   try {
     const chat = await Chat.findOne({
@@ -157,7 +157,7 @@ const processMessage = async (
       {
         messageCountForAI: messagesForAI.length,
         model: GEMINI_MODEL_NAME,
-        system: systemPromptText ? "Present" : "Absent",
+        system: botProfileText ? "Present" : "Absent",
         sessionId,
       },
       "Prepared messages for AI SDK"
@@ -168,7 +168,7 @@ const processMessage = async (
       // <<<< Using imported function
       model: google(GEMINI_MODEL_NAME), // Pass the google provider instance and model name
       tools,
-      system: systemPromptText,
+      system: botProfileText,
       messages: messagesForAI,
       maxSteps: 10, // From your WhatsApp message processor, good to have a limit
     });

@@ -56,8 +56,8 @@ export async function initializeAI(botProfileId) {
     );
 
     // Generate the system prompt text from the bot profile
-    const systemPromptText = botProfileToNaturalLanguage(botProfileDoc); // botProfileDoc is already a plain object due to .lean()
-    if (!systemPromptText || systemPromptText.trim() === "") {
+    const botProfileText = botProfileToNaturalLanguage(botProfileDoc); // botProfileDoc is already a plain object due to .lean()
+    if (!botProfileText || botProfileText.trim() === "") {
       logger.warn(
         { botProfileId, name: botProfileDoc.name },
         "Generated system prompt text is empty. AI will operate without a system instruction."
@@ -67,12 +67,10 @@ export async function initializeAI(botProfileId) {
         {
           botProfileId,
           name: botProfileDoc.name,
-          systemPromptLength: systemPromptText.length,
+          botProfileLength: botProfileText.length,
         },
         "System prompt text generated."
       );
-      // For debugging, you might log a snippet:
-      // logger.debug({ botProfileId, systemPromptSnippet: systemPromptText.substring(0, 100) + "..." });
     }
 
     const mcpClients = {};
@@ -142,7 +140,7 @@ export async function initializeAI(botProfileId) {
       tools: combinedTools,
       google,
       GEMINI_MODEL_NAME,
-      systemPromptText, // <<<< ADDED THIS to the returned object
+      botProfileText: botProfileText,
       closeMcpClients: async () => {
         // ... (implementation as before)
         logger.info({ botProfileId }, "Closing MCP clients for AI instance.");

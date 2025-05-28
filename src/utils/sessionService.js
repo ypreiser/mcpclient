@@ -1,4 +1,4 @@
-// mcpclient/utils/sessionService.js
+// src\utils\sessionService.js
 import { initializeAI } from "../mcpClient.js";
 import BotProfile from "../models/botProfileModel.js";
 import Chat from "../models/chatModel.js"; // Not directly used in this file, but often related
@@ -122,12 +122,10 @@ const initializeSession = async (
       throw err;
     }
 
-    // initializeAI now fetches BotProfile internally and generates systemPromptText
     const aiInstance = await initializeAI(botProfileDoc._id); // Pass the ObjectId
-    // systemPromptText is now part of aiInstance returned by initializeAI
 
     sessions.set(sessionId, {
-      aiInstance, // This now contains systemPromptText
+      aiInstance,
       status: "active",
       botProfileId: botProfileDoc._id,
       botProfileName: botProfileDoc.name,

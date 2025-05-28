@@ -43,7 +43,7 @@ router.get("/connections", requireAuth, async (req, res, next) => {
 // Initialize a new WhatsApp session
 router.post("/session", requireAuth, async (req, res, next) => {
   // requireAuth here
-  const { connectionName, botProfileId } = req.body; // Changed systemPromptId to botProfileId
+  const { connectionName, botProfileId } = req.body;
   const userId = req.user._id; // Get userId from authenticated user
 
   logger.info(
