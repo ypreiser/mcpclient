@@ -90,4 +90,32 @@ chatSchema.pre("save", function (next) {
   next();
 });
 
+// Add a static helper for test setup: createPublicChatSession
+chatSchema.statics.createPublicChatSession = async function ({
+  sessionId,
+  botProfileId,
+  botProfileName,
+  userId,
+  messages = [],
+  metadata = {},
+}) {
+  // This helper is for test setup only
+  const chat = new this({
+    sessionId,
+    botProfileId,
+    botProfileName,
+    source: "webapp",
+    userId,
+    messages,
+    metadata: {
+      userName: metadata.userName || "Test User",
+      lastActive: metadata.lastActive || new Date(),
+      isArchived: metadata.isArchived || false,
+      ...metadata,
+    },
+  });
+  await chat.save();
+  return chat;
+};
+
 export default mongoose.model("Chat", chatSchema);
