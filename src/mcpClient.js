@@ -9,19 +9,14 @@ import { botProfileToNaturalLanguage } from "./utils/json2llm.js"; // Import the
 import logger from "./utils/logger.js";
 
 dotenv.config();
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME;
-if (!GEMINI_MODEL_NAME) {
-  logger.error("GEMINI_MODEL_NAME is not set.");
-}
-
-const GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-if (!GOOGLE_GENERATIVE_AI_API_KEY) {
-  logger.error("GOOGLE_GENERATIVE_AI_API_KEY is not set.");
-  throw new Error("Google Generative AI API Key is not configured.");
-}
 
 export async function initializeAI(botProfileId) {
   try {
+    // Read env vars inside the function for testability
+    const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME;
+    const GOOGLE_GENERATIVE_AI_API_KEY =
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+
     logger.info(
       { botProfileId },
       `Initializing AI services for bot profile ID.`
@@ -32,6 +27,14 @@ export async function initializeAI(botProfileId) {
         "Provided botProfileId is not a valid MongoDB ObjectId."
       );
       throw new Error(`Invalid botProfileId format: ${botProfileId}`);
+    }
+
+    if (!GOOGLE_GENERATIVE_AI_API_KEY) {
+      logger.error("GOOGLE_GENERATIVE_AI_API_KEY is not set.");
+      throw new Error("Google Generative AI API Key is not configured.");
+    }
+    if (!GEMINI_MODEL_NAME) {
+      logger.error("GEMINI_MODEL_NAME is not set.");
     }
 
     const botProfileDoc = await BotProfile.findById(botProfileId).lean();

@@ -1,5 +1,13 @@
 //mcpclient/__tests__/routes/auth.test.js
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import request from "supertest";
 import mongoose from "mongoose";
 import express from "express";
@@ -7,9 +15,9 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import helmet from "helmet";
-import logger from "../../utils/logger.js"; // mocked
+import logger from "../../src/utils/logger.js"; // mocked
 
-import authRoutes, { requireAuth } from "../../routes/authRoute.js";
+import authRoutes, { requireAuth } from "../../src/routes/authRoute.js";
 
 // Minimal app setup for testing auth routes specifically
 let app;
@@ -40,6 +48,15 @@ const initializeTestApp = () => {
 
   return testApp;
 };
+
+// Ensure logger methods are spies for all tests
+beforeAll(() => {
+  vi.spyOn(logger, "info").mockImplementation(() => {});
+  vi.spyOn(logger, "warn").mockImplementation(() => {});
+  vi.spyOn(logger, "error").mockImplementation(() => {});
+  vi.spyOn(logger, "debug").mockImplementation(() => {});
+  vi.spyOn(logger, "fatal").mockImplementation(() => {});
+});
 
 describe("Auth Routes API", () => {
   beforeAll(async () => {

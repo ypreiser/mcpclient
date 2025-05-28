@@ -4,10 +4,10 @@ process.env.NODE_ENV = "test"; // Set this first before any imports
 import { beforeAll, afterAll, afterEach, vi } from "vitest";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
-import User from "../../models/userModel.js"; // Adjust path as needed
-import BotProfile from "../../models/botProfileModel.js"; // Adjust path
-import Chat from "../../models/chatModel.js"; // Adjust path
-import TokenUsageRecord from "../../models/tokenUsageRecordModel.js"; // Adjust path
+import User from "../../src/models/userModel.js"; // Adjust path as needed
+import BotProfile from "../../src/models/botProfileModel.js"; // Adjust path
+import Chat from "../../src/models/chatModel.js"; // Adjust path
+import TokenUsageRecord from "../../src/models/tokenUsageRecordModel.js"; // Adjust path
 // Import other models as you write tests for them
 
 vi.mock("../../utils/logger.js", () => {
