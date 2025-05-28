@@ -1,4 +1,4 @@
-// mcpclient/services/userService.js
+// src\services\userService.js
 import User from "../models/userModel.js";
 
 /**

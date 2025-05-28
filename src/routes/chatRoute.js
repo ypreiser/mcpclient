@@ -1,5 +1,4 @@
 // src\routes\chatRoute.js
-//mcpclient/routes/chatRoute.js
 import express from "express";
 import Chat from "../models/chatModel.js";
 import { requireAuth } from "./authRoute.js";
