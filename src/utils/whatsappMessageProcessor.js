@@ -7,6 +7,7 @@ import logger from "../utils/logger.js";
 import { v2 as cloudinary } from "cloudinary";
 import { generateText } from "ai"; // Import the AI SDK function directly
 import { normalizeDbMessageContentForAI } from "./messageContentUtils.js"; // Import the normalization function
+import { logTokenUsage as centralizedLogTokenUsage } from "./tokenUsageService.js"; // Centralized token logging service
 // Assuming initializeAI is passed in constructor from whatsappService
 
 // Cloudinary config (ensure these env vars are set)
@@ -19,7 +20,6 @@ cloudinary.config({
 
 class WhatsAppMessageProcessor {
   constructor(aiServiceFactory) {
-    // Renamed for clarity: it's a factory/service that provides AI instances
     this.aiServiceFactory = aiServiceFactory;
   }
 
@@ -192,16 +192,18 @@ class WhatsAppMessageProcessor {
       });
 
       if (aiSdkResponse.usage) {
-        await this.logTokenUsage(
-          userId, // Bill to the BotProfile owner
+        // Use centralized logTokenUsage from tokenUsageService.js
+        await centralizedLogTokenUsage({
+          userIdForTokenBilling: userId, // Bill to the BotProfile owner
           botProfileId,
           botProfileName,
-          chat._id,
-          GEMINI_MODEL_NAME,
-          aiSdkResponse.usage,
-          compositeSessionId, // Log with the composite sessionId
-          "whatsapp"
-        );
+          chatId: chat._id,
+          modelName: GEMINI_MODEL_NAME,
+          promptTokens: aiSdkResponse.usage.promptTokens,
+          completionTokens: aiSdkResponse.usage.completionTokens,
+          sessionId: compositeSessionId, // Log with the composite sessionId
+          source: "whatsapp",
+        });
       } else {
         logger.warn(
           { userId, source: "whatsapp", compositeSessionId },
@@ -247,74 +249,6 @@ class WhatsAppMessageProcessor {
         );
       }
     }
-  }
-
-  async logTokenUsage(
-    userIdForBilling, // BotProfile owner
-    botProfileId,
-    botProfileName,
-    chatId,
-    modelName,
-    usageData,
-    sessionIdWithSource, // e.g., compositeSessionId for whatsapp
-    source
-  ) {
-    const { promptTokens, completionTokens } = usageData;
-    if (
-      typeof promptTokens !== "number" ||
-      typeof completionTokens !== "number"
-    ) {
-      logger.warn(
-        {
-          userId: userIdForBilling,
-          usage: usageData,
-          source,
-          sessionIdWithSource,
-        },
-        "MessageProcessor: Invalid token usage data."
-      );
-      return;
-    }
-
-    const totalTokens = promptTokens + completionTokens;
-    const usageRecord = new TokenUsageRecord({
-      userId: userIdForBilling,
-      botProfileId,
-      botProfileName,
-      chatId,
-      source,
-      modelName,
-      promptTokens,
-      completionTokens,
-      totalTokens,
-      timestamp: new Date(),
-    });
-    await usageRecord.save();
-
-    // Log against the User who owns the BotProfile
-    await User.logTokenUsage({
-      userId: userIdForBilling,
-      promptTokens,
-      completionTokens,
-    });
-    // Log against the BotProfile itself
-    await BotProfile.logTokenUsage({
-      botProfileId,
-      promptTokens,
-      completionTokens,
-    });
-
-    logger.info(
-      {
-        userId: userIdForBilling,
-        botProfileId,
-        promptTokens,
-        completionTokens,
-        source,
-        sessionIdWithSource,
-      },
-      "MessageProcessor: Token usage logged."
-    );
   }
 }
 
