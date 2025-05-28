@@ -69,6 +69,7 @@ function clearAllMocks() {
 describe("whatsappService", () => {
   beforeEach(() => {
     clearAllMocks();
+    whatsappService.isShuttingDown = false; // Ensure clean state for isShuttingDown
   });
 
   it("should initialize a session and call clientManager.createAndInitializeClient", async () => {
@@ -87,11 +88,15 @@ describe("whatsappService", () => {
   });
 
   it("should throw if shutdown in progress on initializeSession", async () => {
+    // beforeEach ensures whatsappService.isShuttingDown is false initially
     whatsappService.isShuttingDown = true;
-    await expect(
-      whatsappService.initializeSession("conn1", "bot1", "user1")
-    ).rejects.toThrow("Service is shutting down.");
-    whatsappService.isShuttingDown = false;
+    try {
+      await expect(
+        whatsappService.initializeSession("conn1", "bot1", "user1")
+      ).rejects.toThrow("Service is shutting down.");
+    } finally {
+      whatsappService.isShuttingDown = false; // Ensure it's reset even if expect throws
+    }
   });
 
   it("should get QR code if session is ready", async () => {

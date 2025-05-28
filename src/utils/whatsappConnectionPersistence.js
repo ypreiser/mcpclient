@@ -204,10 +204,10 @@ class WhatsAppConnectionPersistence {
    */
   async getConnectionsToReconnect() {
     try {
-      // Selects all necessary fields including userId and botProfileId for re-initialization.
-      return await WhatsAppConnection.find({ autoReconnect: true })
+      const connections = await WhatsAppConnection.find({ autoReconnect: true })
         .select("connectionName botProfileId userId") // Ensure userId is selected
         .lean();
+      return connections || [];
     } catch (dbError) {
       logger.error(
         { err: dbError },

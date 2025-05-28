@@ -167,13 +167,15 @@ describe("WhatsAppConnectionPersistence", () => {
     );
     expect(logger.error).toHaveBeenCalled();
   });
-
   it("getConnectionsToReconnect returns array", async () => {
-    WhatsAppConnection.find()
-      .select()
-      .lean.mockResolvedValue([
+    const mockLean = vi
+      .fn()
+      .mockResolvedValue([
         { connectionName: "conn1", userId: "user1", botProfileId: "bot1" },
       ]);
+    const mockSelect = vi.fn().mockReturnValue({ lean: mockLean });
+    WhatsAppConnection.find.mockReturnValue({ select: mockSelect });
+
     const result =
       await WhatsAppConnectionPersistence.getConnectionsToReconnect();
     expect(Array.isArray(result)).toBe(true);
@@ -181,9 +183,10 @@ describe("WhatsAppConnectionPersistence", () => {
   });
 
   it("getConnectionsToReconnect logs error and returns [] on db error", async () => {
-    WhatsAppConnection.find()
-      .select()
-      .lean.mockRejectedValue(new Error("fail"));
+    const mockLean = vi.fn().mockRejectedValue(new Error("fail"));
+    const mockSelect = vi.fn().mockReturnValue({ lean: mockLean });
+    WhatsAppConnection.find.mockReturnValue({ select: mockSelect });
+
     const result =
       await WhatsAppConnectionPersistence.getConnectionsToReconnect();
     expect(logger.error).toHaveBeenCalled();
