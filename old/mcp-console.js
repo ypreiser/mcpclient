@@ -8,9 +8,20 @@ import readline from "readline/promises";
 import dotenv from "dotenv";
 dotenv.config();
 const MSSQL_PASSWORD = process.env.MSSQL_PASSWORD;
-if (!MSSQL_PASSWORD) {
+const MSSQL_SERVER = process.env.MSSQL_SERVER;
+const MSSQL_USER = process.env.MSSQL_USER;
+const MSSQL_DATABASE = process.env.MSSQL_DATABASE;
+const MAIN_COMPANY_ID = process.env.MAIN_COMPANY_ID;
+
+if (
+  !MSSQL_PASSWORD ||
+  !MSSQL_SERVER ||
+  !MSSQL_USER ||
+  !MSSQL_DATABASE ||
+  !MAIN_COMPANY_ID
+) {
   console.error(
-    "MSSQL_PASSWORD is not set. Please set it in your environment variables."
+    "MSSQL varables are not set. Please set it in your environment variables."
   );
   process.exit(1);
 }
@@ -49,11 +60,11 @@ async function main() {
       command: "node",
       args: ["C:/ts-sql-mcp-server/dist/server.js"],
       env: {
-        MSSQL_SERVER: "185.145.252.191",
-        MSSQL_USER: "Levor_Login_TenLow",
+        MSSQL_SERVER,
+        MSSQL_USER,
         MSSQL_PASSWORD,
-        MSSQL_DATABASE: "LevorData1",
-        MAIN_COMPANY_ID: "2",
+        MSSQL_DATABASE,
+        MAIN_COMPANY_ID,
       },
     });
 
