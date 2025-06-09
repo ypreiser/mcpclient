@@ -7,6 +7,14 @@ import readline from "readline/promises";
 
 import dotenv from "dotenv";
 dotenv.config();
+const MSSQL_PASSWORD = process.env.MSSQL_PASSWORD;
+if (!MSSQL_PASSWORD) {
+  console.error(
+    "MSSQL_PASSWORD is not set. Please set it in your environment variables."
+  );
+  process.exit(1);
+}
+
 const GEMINI_MODEL_NAME = "gemini-2.5-flash-preview-05-20";
 
 const GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -43,7 +51,7 @@ async function main() {
       env: {
         MSSQL_SERVER: "185.145.252.191",
         MSSQL_USER: "Levor_Login_TenLow",
-        MSSQL_PASSWORD: "Sql@TenLow.co.il",
+        MSSQL_PASSWORD,
         MSSQL_DATABASE: "LevorData1",
         MAIN_COMPANY_ID: "2",
       },
