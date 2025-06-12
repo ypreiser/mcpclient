@@ -57,15 +57,30 @@ async function main() {
       // command: "node",
       // args: ["C:/mcp/mcp-server/build/email-final-documents.js"],
 
-      command: "node",
-      args: ["C:/ts-sql-mcp-server/dist/server.js"],
+      // command: "node",
+      // args: ["C:/ts-sql-mcp-server/dist/server.js"],
+
+      command: "dotnet",
+      args: [
+        "run",
+        "--project",
+        "C:/c#-sql-mcp-server/src/DocumentAnalyticsMcpServer/DocumentAnalyticsMcpServer.csproj",
+        "--environment",
+        "Development",
+        "--no-build",
+        "--verbosity",
+        "detailed",
+      ],
       env: {
-        MSSQL_SERVER,
-        MSSQL_USER,
-        MSSQL_PASSWORD,
-        MSSQL_DATABASE,
-        MAIN_COMPANY_ID,
+        ASPNETCORE_ENVIRONMENT: "Development",
       },
+      // env: {
+      //   MSSQL_SERVER,
+      //   MSSQL_USER,
+      //   MSSQL_PASSWORD,
+      //   MSSQL_DATABASE,
+      //   MAIN_COMPANY_ID,
+      // },
     });
 
     clientOne = await experimental_createMCPClient({
